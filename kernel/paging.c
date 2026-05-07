@@ -29,7 +29,17 @@ static void flush_tlb_all(void) {
 }
 
 static u32 align_up(u32 value, u32 align) {
-    return (value + align - 1) & ~(align - 1);
+    u32 mask = align - 1;
+
+    if ((value & mask) == 0) {
+        return value;
+    }
+
+    if (value > 0xFFFFFFFFu - mask) {
+        return 0xFFFFFFFFu & ~mask;
+    }
+
+    return (value + mask) & ~mask;
 }
 
 static void mem_zero(void* ptr, u32 size) {
@@ -152,6 +162,10 @@ u32 paging_get_physical(u32 virt_addr) {
 }
 
 void paging_identity_map_range(u32 start, u32 length, u32 flags) {
+    if (length == 0 || start > 0xFFFFFFFFu - length) {
+        return;
+    }
+
     u32 addr = align_down(start, PAGE_SIZE);
     u32 end  = align_up(start + length, PAGE_SIZE);
 

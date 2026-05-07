@@ -16,11 +16,35 @@ static u32 g_total_usable_low = 0;
 static u32 g_highest_usable_low = 0;
 
 static u32 align_up(u32 value, u32 align) {
-    return (value + align - 1) & ~(align - 1);
+    u32 mask = align - 1;
+
+    if ((value & mask) == 0) {
+        return value;
+    }
+
+    if (value > 0xFFFFFFFFu - mask) {
+        return 0xFFFFFFFFu & ~mask;
+    }
+
+    return (value + mask) & ~mask;
 }
 
 static u32 align_down(u32 value, u32 align) {
     return value & ~(align - 1);
+}
+
+static int add_overflows_u32(u32 a, u32 b, u32* out) {
+    u32 result = a + b;
+
+    if (result < a) {
+        return 1;
+    }
+
+    if (out) {
+        *out = result;
+    }
+
+    return 0;
 }
 
 static void print_hex32(u32 value) {
@@ -57,12 +81,13 @@ void memmap_init(void) {
 
     memmap_entry_t* raw = (memmap_entry_t*)(E820_MAP_ADDR + 4);
 
-    g_memmap_count = raw_count;
+    g_memmap_count = 0;
     g_total_usable_low = 0;
     g_highest_usable_low = 0;
 
     for (u32 i = 0; i < raw_count; i++) {
         memmap_entry_t entry = raw[i];
+        u32 region_end;
 
         // Basic validation
         if (entry.length_low == 0 && entry.length_high == 0) {
@@ -71,6 +96,10 @@ void memmap_init(void) {
 
         if (entry.type == 0) {
             continue; // Invalid type
+        }
+
+        if (g_memmap_count >= MEMMAP_MAX_ENTRIES) {
+            break;
         }
 
         g_memmap[g_memmap_count++] = entry;
@@ -83,8 +112,12 @@ void memmap_init(void) {
             continue;
         }
 
+        if (add_overflows_u32(entry.base_low, entry.length_low, &region_end)) {
+            continue;
+        }
+
         u32 start = align_up(entry.base_low, PAGE_SIZE);
-        u32 end   = align_down(entry.base_low + entry.length_low, PAGE_SIZE);
+        u32 end   = align_down(region_end, PAGE_SIZE);
 
         if (end > start) {
             g_total_usable_low += (end - start);
@@ -124,8 +157,13 @@ int memmap_find_largest_usable_low(u32* out_base, u32* out_length) {
         if (e->type != MEMMAP_TYPE_USABLE) continue;
         if (e->base_high != 0 || e->length_high != 0) continue;
 
+        u32 region_end;
+        if (add_overflows_u32(e->base_low, e->length_low, &region_end)) {
+            continue;
+        }
+
         u32 start = align_up(e->base_low, PAGE_SIZE);
-        u32 end   = align_down(e->base_low + e->length_low, PAGE_SIZE);
+        u32 end   = align_down(region_end, PAGE_SIZE);
 
         if (end > start) {
             u32 len = end - start;
@@ -153,7 +191,11 @@ int memmap_find_first_usable_above(u32 min_addr, u32* out_base, u32* out_length)
         if (e->base_high != 0 || e->length_high != 0) continue;
 
         u32 start = e->base_low;
-        u32 end = e->base_low + e->length_low;
+        u32 end;
+
+        if (add_overflows_u32(e->base_low, e->length_low, &end)) {
+            continue;
+        }
 
         if (end <= min_addr) continue;
         if (start < min_addr) start = min_addr;
@@ -174,7 +216,10 @@ int memmap_find_first_usable_above(u32 min_addr, u32* out_base, u32* out_length)
 int memmap_is_usable_range_low(u32 base, u32 length) {
     if (length == 0) return 1;
 
-    u32 end = base + length;
+    u32 end;
+    if (add_overflows_u32(base, length, &end)) {
+        return 0;
+    }
 
     for (u32 i = 0; i < g_memmap_count; i++) {
         const memmap_entry_t* e = &g_memmap[i];
@@ -183,7 +228,11 @@ int memmap_is_usable_range_low(u32 base, u32 length) {
         if (e->base_high != 0 || e->length_high != 0) continue;
 
         u32 e_start = e->base_low;
-        u32 e_end   = e->base_low + e->length_low;
+        u32 e_end;
+
+        if (add_overflows_u32(e->base_low, e->length_low, &e_end)) {
+            continue;
+        }
 
         if (base >= e_start && end <= e_end) {
             return 1;

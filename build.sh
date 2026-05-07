@@ -98,6 +98,31 @@ FONT8X8_C="graphics/font8x8.c"
 FONT8X8_H="graphics/font8x8.h"
 FONT8X8_OBJ="$BUILD_DIR/font8x8.o"
 
+UEFI_DIR="uefi"
+UEFI_C="$UEFI_DIR/bootx64.c"
+UEFI_OBJ="$BUILD_DIR/bootx64.o"
+UEFI_SO="$BUILD_DIR/bootx64.so"
+UEFI_EFI="$BUILD_DIR/BOOTX64.EFI"
+UEFI_IMG="$BUILD_DIR/uefi.img"
+UEFI_IMG_MB=64
+
+KERNEL64_DIR="kernel64"
+KERNEL64_ENTRY_ASM="$KERNEL64_DIR/entry64.asm"
+KERNEL64_C="$KERNEL64_DIR/main.c"
+KERNEL64_LD="$KERNEL64_DIR/linker.ld"
+
+KERNEL64_ENTRY_OBJ="$BUILD_DIR/entry64.o"
+KERNEL64_OBJ="$BUILD_DIR/kernel64.o"
+KERNEL64_ELF="$BUILD_DIR/kernel64.elf"
+KERNEL64_BIN="$BUILD_DIR/KERNEL64.BIN"
+
+KERNEL64_FONT8X8_OBJ="$BUILD_DIR/font8x8_64.o"
+
+WIN_EXPORT_DIR="${WIN_EXPORT_DIR:-/mnt/c/naqos}"
+WIN_EXPORT_IMG="$WIN_EXPORT_DIR/os.img"
+WIN_EXPORT_VDI="$WIN_EXPORT_DIR/naqos.vdi"
+WIN_VBOXMANAGE="${WIN_VBOXMANAGE:-/mnt/c/Program Files/Oracle/VirtualBox/VBoxManage.exe}"
+
 BOOT_BIN="$BUILD_DIR/boot.bin"
 STAGE2_BIN="$BUILD_DIR/stage2.bin"
 
@@ -111,6 +136,10 @@ KERNEL_BIN="$BUILD_DIR/kernel.bin"
 
 FS_IMG="$BUILD_DIR/fs.img"
 OS_IMG="$BUILD_DIR/os.img"
+
+VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
+VBOX_VM_NAME="${VBOX_VM_NAME:-NAQ OS}"
+VBOX_VDI="$BUILD_DIR/naqos.vdi"
 
 # Disk layout
 STAGE2_SECTORS=64
@@ -141,6 +170,8 @@ GCC_FLAGS=(
   -ffreestanding
   -fno-pie
   -fno-stack-protector
+  -fno-asynchronous-unwind-tables
+  -fno-unwind-tables
   -nostdlib
   -c
 )
@@ -331,6 +362,55 @@ build_kernel() {
   echo "Kernel binary size: $kernel_size bytes"
 }
 
+build_kernel64() {
+  msg "Building 64-bit kernel entry assembly"
+  "$NASM" -f elf64 "$KERNEL64_ENTRY_ASM" -o "$KERNEL64_ENTRY_OBJ"
+
+  msg "Compiling 64-bit kernel"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -nostdlib \
+    -c "$KERNEL64_C" \
+    -o "$KERNEL64_OBJ"
+
+  msg "Compiling 64-bit font8x8"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -nostdlib \
+    -c "$FONT8X8_C" \
+    -o "$KERNEL64_FONT8X8_OBJ"
+
+  msg "Linking 64-bit kernel ELF"
+  "$LD" \
+    -m elf_x86_64 \
+    -T "$KERNEL64_LD" \
+    -o "$KERNEL64_ELF" \
+    "$KERNEL64_ENTRY_OBJ" \
+    "$KERNEL64_OBJ" \
+    "$KERNEL64_FONT8X8_OBJ"
+
+  msg "Converting 64-bit kernel ELF to flat binary"
+  "$OBJCOPY" -O binary "$KERNEL64_ELF" "$KERNEL64_BIN"
+
+  local kernel64_size
+  kernel64_size=$(stat -c%s "$KERNEL64_BIN")
+  echo "Kernel64 binary size: $kernel64_size bytes"
+}
+
 build_apps() {
   msg "Building app entry assembly"
   "$NASM" -f elf32 "$APP_ENTRY_ASM" -o "$APP_ENTRY_OBJ"
@@ -437,6 +517,17 @@ EOF
   "$MDIR" -i "$FS_IMG" ::/docs || true
 }
 
+find_first_existing() {
+  for path in "$@"; do
+    if [[ -e "$path" ]]; then
+      echo "$path"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 build_disk_image() {
   msg "Creating final disk image (${OS_IMG_MB} MB)"
   rm -f "$OS_IMG"
@@ -450,6 +541,109 @@ build_disk_image() {
 
   msg "Writing FAT32 filesystem to LBA ${FS_START_LBA}"
   dd if="$FS_IMG" of="$OS_IMG" conv=notrunc bs=512 seek="$FS_START_LBA" status=none
+}
+
+build_uefi() {
+  msg "Building UEFI BOOTX64.EFI"
+
+  if [[ ! -f "$UEFI_C" ]]; then
+    echo "Error: missing $UEFI_C" >&2
+    exit 1
+  fi
+
+  local gnuefi_crt
+  local gnuefi_lds
+  local gnuefi_lib_dir
+
+  gnuefi_crt="$(find_first_existing \
+    /usr/lib/crt0-efi-x86_64.o \
+    /usr/lib/x86_64-linux-gnu/gnuefi/crt0-efi-x86_64.o \
+    /usr/lib64/gnuefi/crt0-efi-x86_64.o \
+  )" || {
+    echo "Error: could not find crt0-efi-x86_64.o" >&2
+    echo "Install GNU-EFI with: sudo apt install gnu-efi" >&2
+    exit 1
+  }
+
+  gnuefi_lds="$(find_first_existing \
+    /usr/lib/elf_x86_64_efi.lds \
+    /usr/lib/x86_64-linux-gnu/gnuefi/elf_x86_64_efi.lds \
+    /usr/lib64/gnuefi/elf_x86_64_efi.lds \
+  )" || {
+    echo "Error: could not find elf_x86_64_efi.lds" >&2
+    echo "Install GNU-EFI with: sudo apt install gnu-efi" >&2
+    exit 1
+  }
+
+  gnuefi_lib_dir="$(dirname "$gnuefi_crt")"
+
+  "$GCC" \
+    -Iinclude \
+    -I/usr/include/efi \
+    -I/usr/include/efi/x86_64 \
+    -fpic \
+    -ffreestanding \
+    -fno-stack-protector \
+    -fno-stack-check \
+    -fshort-wchar \
+    -mno-red-zone \
+    -maccumulate-outgoing-args \
+    -c "$UEFI_C" \
+    -o "$UEFI_OBJ"
+
+  "$LD" \
+    -nostdlib \
+    -znocombreloc \
+    -T "$gnuefi_lds" \
+    -shared \
+    -Bsymbolic \
+    "$gnuefi_crt" \
+    "$UEFI_OBJ" \
+    -L "$gnuefi_lib_dir" \
+    -lefi \
+    -lgnuefi \
+    -o "$UEFI_SO"
+
+  "$OBJCOPY" \
+    -j .text \
+    -j .sdata \
+    -j .data \
+    -j .dynamic \
+    -j .dynsym \
+    -j .rel \
+    -j .rela \
+    -j .reloc \
+    --target=efi-app-x86_64 \
+    "$UEFI_SO" \
+    "$UEFI_EFI"
+
+  echo "UEFI app size: $(stat -c%s "$UEFI_EFI") bytes"
+}
+
+build_uefi_image() {
+  msg "Creating UEFI FAT image (${UEFI_IMG_MB} MB)"
+
+  rm -f "$UEFI_IMG"
+
+  dd if=/dev/zero of="$UEFI_IMG" bs=1M count="$UEFI_IMG_MB" status=none
+  "$MKFS_FAT" -F 32 "$UEFI_IMG" >/dev/null
+
+  "$MMD" -i "$UEFI_IMG" ::/EFI || true
+  "$MMD" -i "$UEFI_IMG" ::/EFI/BOOT || true
+
+  "$MCOPY" -i "$UEFI_IMG" "$UEFI_EFI" ::/EFI/BOOT/BOOTX64.EFI
+
+  if [[ -f "$KERNEL64_BIN" ]]; then
+    msg "Copying KERNEL64.BIN into UEFI image"
+    "$MCOPY" -i "$UEFI_IMG" "$KERNEL64_BIN" ::KERNEL64.BIN
+  else
+    echo "Warning: $KERNEL64_BIN not found; UEFI loader will not find KERNEL64.BIN."
+  fi
+
+  "$MDIR" -i "$UEFI_IMG" ::/ || true
+  "$MDIR" -i "$UEFI_IMG" ::/EFI/BOOT || true
+
+  echo "Created: $UEFI_IMG"
 }
 
 show_summary() {
@@ -467,70 +661,87 @@ show_summary() {
 }
 
 run_qemu() {
+  local display_backend="${QEMU_DISPLAY:-gtk}"
+
   "$QEMU" \
     -vga std \
-    -display sdl \
+    -display "$display_backend" \
     -monitor none \
     -serial none \
     -drive format=raw,file="$OS_IMG"
 }
 
-write_bochsrc() {
-  mkdir -p "$BUILD_DIR"
+build_vbox_disk() {
+  msg "Converting raw OS image to VirtualBox VDI"
 
-  local bochs_bios="/usr/share/bochs/BIOS-bochs-latest"
-  local bochs_vgabios=""
-
-  if [[ -f "/usr/share/bochs/VGABIOS-lgpl-latest" ]]; then
-    bochs_vgabios="/usr/share/bochs/VGABIOS-lgpl-latest"
-  elif [[ -f "/usr/share/vgabios/vgabios.bin" ]]; then
-    bochs_vgabios="/usr/share/vgabios/vgabios.bin"
-  else
-    echo "Error: could not find Bochs/VBE VGA BIOS ROM" >&2
-    echo "Tried:" >&2
-    echo "  /usr/share/bochs/VGABIOS-lgpl-latest" >&2
-    echo "  /usr/share/vgabios/vgabios.bin" >&2
+  if ! command -v "$VBOXMANAGE" >/dev/null 2>&1; then
+    echo "Error: VBoxManage not found." >&2
+    echo "If you're using WSL, you may need to run VBoxManage from Windows PowerShell." >&2
     exit 1
   fi
 
-  cat > "$BOCHS_CFG" <<EOF
-megs: 128
+  rm -f "$VBOX_VDI"
 
-romimage: file=$bochs_bios
-vgaromimage: file=$bochs_vgabios
+  "$VBOXMANAGE" convertfromraw "$OS_IMG" "$VBOX_VDI" --format VDI
 
-vga: extension=vbe, update_freq=15
-
-ata0-master: type=disk, mode=flat, path="$OS_IMG", cylinders=272, heads=16, spt=32
-boot: disk
-
-log: $BUILD_DIR/bochs.log
-panic: action=ask
-error: action=ask
-info: action=report
-debug: action=ignore
-
-clock: sync=realtime
-cpu: ips=50000000
-
-display_library: sdl2
-EOF
-
-  echo "Bochs BIOS    : $bochs_bios"
-  echo "Bochs VGA BIOS: $bochs_vgabios"
+  echo "Created: $VBOX_VDI"
 }
 
-run_bochs() {
-  if ! command -v "$BOCHS" >/dev/null 2>&1; then
-    echo "Error: bochs not found. Install it with:" >&2
-    echo "  sudo apt install bochs bochs-sdl bochsbios vgabios" >&2
+create_or_update_vbox_vm() {
+  msg "Creating/updating VirtualBox VM"
+
+  if ! command -v "$VBOXMANAGE" >/dev/null 2>&1; then
+    echo "Error: VBoxManage not found." >&2
     exit 1
   fi
 
-  write_bochsrc
+  if ! "$VBOXMANAGE" showvminfo "$VBOX_VM_NAME" >/dev/null 2>&1; then
+    "$VBOXMANAGE" createvm \
+      --name "$VBOX_VM_NAME" \
+      --ostype Other \
+      --register
 
-  "$BOCHS" -q -f "$BOCHS_CFG"
+    "$VBOXMANAGE" modifyvm "$VBOX_VM_NAME" \
+      --memory 256 \
+      --vram 32 \
+      --firmware bios \
+      --graphicscontroller vboxvga \
+      --boot1 disk \
+      --boot2 none \
+      --boot3 none \
+      --boot4 none \
+      --audio none \
+      --usb off \
+      --nic1 none
+
+    "$VBOXMANAGE" storagectl "$VBOX_VM_NAME" \
+      --name "IDE Controller" \
+      --add ide \
+      --controller PIIX4
+  fi
+
+  "$VBOXMANAGE" storageattach "$VBOX_VM_NAME" \
+    --storagectl "IDE Controller" \
+    --port 0 \
+    --device 0 \
+    --medium none >/dev/null 2>&1 || true
+
+  "$VBOXMANAGE" storageattach "$VBOX_VM_NAME" \
+    --storagectl "IDE Controller" \
+    --port 0 \
+    --device 0 \
+    --type hdd \
+    --medium "$VBOX_VDI"
 }
+
+run_vbox() {
+  build_vbox_disk
+  create_or_update_vbox_vm
+
+  msg "Starting VirtualBox VM"
+  "$VBOXMANAGE" startvm "$VBOX_VM_NAME"
+}
+
 
 usage() {
   cat <<EOF
@@ -544,13 +755,65 @@ Commands:
   kernel    Build only kernel
   boot      Build only stage1 + stage2
   image     Build final disk image (after boot + kernel + fs)
+  vbox-win  Build and export a Windows VirtualBox VDI to C:\naqos
+  uefi      Build UEFI BOOTX64.EFI and uefi.img
   qemu      Run in QEMU
-  bochs     Run in Bochs
   help      Show this help
+
+Environment:
+  QEMU_DISPLAY=gtk|sdl|curses|none  Choose QEMU display backend (default: gtk)
 
 Default:
   build
 EOF
+}
+
+export_vbox_windows() {
+  msg "Exporting VirtualBox image for Windows"
+
+  if [[ ! -f "$OS_IMG" ]]; then
+    echo "Error: $OS_IMG does not exist. Build the disk image first." >&2
+    exit 1
+  fi
+
+  mkdir -p "$WIN_EXPORT_DIR"
+
+  rm -f "$WIN_EXPORT_IMG"
+  rm -f "$WIN_EXPORT_VDI"
+
+  msg "Copying raw image to Windows-accessible folder"
+  cp "$OS_IMG" "$WIN_EXPORT_IMG"
+
+  if [[ -x "$WIN_VBOXMANAGE" ]]; then
+    msg "Converting raw image to VDI using Windows VBoxManage"
+
+    "$WIN_VBOXMANAGE" convertfromraw \
+      "C:\\naqos\\os.img" \
+      "C:\\naqos\\naqos.vdi" \
+      --format VDI
+
+    echo
+    echo "Created:"
+    echo "  C:\\naqos\\naqos.vdi"
+    echo
+    echo "Attach this VDI in VirtualBox with:"
+    echo "  Firmware: BIOS"
+    echo "  Graphics Controller: VBoxVGA"
+    echo "  Video Memory: 32 MB"
+    echo "  RAM: 256 MB"
+  else
+    echo
+    echo "Copied raw image to:"
+    echo "  $WIN_EXPORT_IMG"
+    echo
+    echo "Could not find executable VBoxManage at:"
+    echo "  $WIN_VBOXMANAGE"
+    echo
+    echo "Run this from Windows PowerShell:"
+    echo
+    echo '  & "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" convertfromraw "C:\naqos\os.img" "C:\naqos\naqos.vdi" --format VDI'
+    echo
+  fi
 }
 
 # ============================================================
@@ -592,7 +855,7 @@ case "$cmd" in
   qemu)
     run_qemu
     ;;
-  bochs)
+  vdi)
     check_tools
     clean
     build_bootloader
@@ -601,10 +864,36 @@ case "$cmd" in
     build_filesystem
     build_disk_image
     show_summary
-    run_bochs
+    build_vbox_disk
     ;;
-  bochs-only)
-    run_bochs
+  uefi)
+    check_tools
+    clean
+    build_kernel64
+    build_uefi
+    build_uefi_image
+    ;;
+  vbox)
+    check_tools
+    clean
+    build_bootloader
+    build_kernel
+    build_apps
+    build_filesystem
+    build_disk_image
+    show_summary
+    run_vbox
+    ;;
+  vbox-win)
+    check_tools
+    clean
+    build_bootloader
+    build_kernel
+    build_apps
+    build_filesystem
+    build_disk_image
+    show_summary
+    export_vbox_windows
     ;;
   kernel)
     check_tools

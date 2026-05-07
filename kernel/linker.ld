@@ -27,9 +27,9 @@ SECTIONS
 
     .bss :
     {
+        __bss_start = .;
         *(.bss*)
         *(COMMON)
+        __kernel_end = .;
     } :data
-
-    __kernel_end = .;
 }

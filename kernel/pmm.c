@@ -13,11 +13,37 @@ static u32 pmm_total_usable_frames = 0;
 static u32 pmm_used_frame_count = 0;
 
 static u32 align_up(u32 value, u32 align) {
-    return (value + align - 1) & ~(align - 1);
+    u32 mask = align - 1;
+
+    if ((value & mask) == 0) {
+        return value;
+    }
+
+    if (value > 0xFFFFFFFFu - mask) {
+        return 0xFFFFFFFFu & ~mask;
+    }
+
+    return (value + mask) & ~mask;
 }
 
 static u32 align_down(u32 value, u32 align) {
     return value & ~(align - 1);
+}
+
+static int checked_range_end(u32 start, u32 length, u32* out_end) {
+    if (length == 0) {
+        return 0;
+    }
+
+    if (start > 0xFFFFFFFFu - length) {
+        return 0;
+    }
+
+    if (out_end) {
+        *out_end = start + length;
+    }
+
+    return 1;
 }
 
 static void bitmap_set(u32 frame) {
@@ -51,8 +77,14 @@ static void unreserve_frame(u32 frame) {
 }
 
 void pmm_reserve_region(u32 start, u32 length) {
+    u32 raw_end;
+
+    if (!checked_range_end(start, length, &raw_end)) {
+        return;
+    }
+
     u32 begin = align_down(start, PMM_FRAME_SIZE);
-    u32 end   = align_up(start + length, PMM_FRAME_SIZE);
+    u32 end   = align_up(raw_end, PMM_FRAME_SIZE);
 
     for (u32 addr = begin; addr < end; addr += PMM_FRAME_SIZE) {
         reserve_frame(addr / PMM_FRAME_SIZE);
@@ -60,8 +92,14 @@ void pmm_reserve_region(u32 start, u32 length) {
 }
 
 void pmm_unreserve_region(u32 start, u32 length) {
+    u32 raw_end;
+
+    if (!checked_range_end(start, length, &raw_end)) {
+        return;
+    }
+
     u32 begin = align_up(start, PMM_FRAME_SIZE);
-    u32 end   = align_down(start + length, PMM_FRAME_SIZE);
+    u32 end   = align_down(raw_end, PMM_FRAME_SIZE);
 
     for (u32 addr = begin; addr < end; addr += PMM_FRAME_SIZE) {
         unreserve_frame(addr / PMM_FRAME_SIZE);
@@ -82,7 +120,11 @@ void pmm_init(void) {
         if (!e) continue;
         if (e->base_high != 0 || e->length_high != 0) continue;
 
-        u32 region_end = e->base_low + e->length_low;
+        u32 region_end;
+        if (!checked_range_end(e->base_low, e->length_low, &region_end)) {
+            continue;
+        }
+
         u32 end_frame = align_up(region_end, PMM_FRAME_SIZE) / PMM_FRAME_SIZE;
 
         if (end_frame > pmm_max_frame) {
@@ -106,8 +148,13 @@ void pmm_init(void) {
         u32 len   = e->length_low;
         if (len == 0) continue;
 
+        u32 region_end;
+        if (!checked_range_end(start, len, &region_end)) {
+            continue;
+        }
+
         u32 begin = align_up(start, PMM_FRAME_SIZE);
-        u32 end   = align_down(start + len, PMM_FRAME_SIZE);
+        u32 end   = align_down(region_end, PMM_FRAME_SIZE);
 
         if (end > begin) {
             pmm_total_usable_frames += (end - begin) / PMM_FRAME_SIZE;

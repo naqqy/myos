@@ -106,6 +106,14 @@ void fb_init(void) {
         return;
     }
 
+    if (info->height > 0xFFFFFFFFu / info->pitch) {
+        return;
+    }
+
+    if (info->height > 0xFFFFFFFFu / min_pitch) {
+        return;
+    }
+
     u32 size = info->pitch * info->height;
 
     if (size < min_pitch * info->height) {
@@ -117,6 +125,10 @@ void fb_init(void) {
     }
 
     if (info->phys_addr < 0x01000000u) {
+        return;
+    }
+
+    if (info->phys_addr > 0xFFFFFFFFu - size) {
         return;
     }
 
@@ -179,6 +191,10 @@ void fb_fill_rect(u32 x, u32 y, u32 w, u32 h, u32 color) {
         return;
     }
 
+    if (w == 0 || h == 0) {
+        return;
+    }
+
     if (x >= fb.width || y >= fb.height) {
         return;
     }
@@ -205,6 +221,52 @@ void fb_clear(u32 color) {
     fb_fill_rect(0, 0, fb.width, fb.height, color);
 }
 
+void fb_draw_xrgb32_row(u32 x, u32 y, const u32* pixels, u32 count) {
+    if (!fb_is_available || !pixels || count == 0) {
+        return;
+    }
+
+    if (x >= fb.width || y >= fb.height) {
+        return;
+    }
+
+    if (count > fb.width - x) {
+        count = fb.width - x;
+    }
+
+    u8* dest = fb_base + y * fb.pitch + x * fb_pixel_bytes;
+
+    if (fb.bpp == 32) {
+        u32* pixel = (u32*)dest;
+
+        for (u32 i = 0; i < count; i++) {
+            pixel[i] = pixels[i];
+        }
+
+        return;
+    }
+
+    if (fb.bpp == 24) {
+        u8* pixel = dest;
+
+        for (u32 i = 0; i < count; i++) {
+            u32 color = pixels[i];
+            pixel[0] = (u8)(color & 0xFF);
+            pixel[1] = (u8)((color >> 8) & 0xFF);
+            pixel[2] = (u8)((color >> 16) & 0xFF);
+            pixel += 3;
+        }
+
+        return;
+    }
+
+    u16* pixel = (u16*)dest;
+
+    for (u32 i = 0; i < count; i++) {
+        pixel[i] = fb_color_to_rgb565(pixels[i]);
+    }
+}
+
 static const u8* fb_get_bios_font8x16(char c) {
     u32* magic = (u32*)FONT8X16_INFO_ADDR;
 
@@ -216,11 +278,11 @@ static const u8* fb_get_bios_font8x16(char c) {
 }
 
 void fb_draw_char8x16(u32 x, u32 y, char c, u32 fg, u32 bg) {
-    const u8* glyph16 = fb_get_bios_font8x16(c);
-
     if (!fb_is_available) {
         return;
     }
+
+    const u8* glyph16 = fb_get_bios_font8x16(c);
 
     if (x >= fb.width || y >= fb.height) {
         return;
@@ -293,6 +355,10 @@ void fb_draw_char8x16(u32 x, u32 y, char c, u32 fg, u32 bg) {
 
 void fb_draw_cursor8x16(u32 x, u32 y, u32 color) {
     if (!fb_is_available) {
+        return;
+    }
+
+    if (y > 0xFFFFFFFFu - 14u) {
         return;
     }
 

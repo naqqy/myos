@@ -2,16 +2,6 @@
 #include "framebuffer.h"
 #include "kernel/fat32.h"
 
-static inline u16 image_color_to_rgb565(u32 color) {
-    u8 r = (u8)((color >> 16) & 0xFF);
-    u8 g = (u8)((color >> 8) & 0xFF);
-    u8 b = (u8)(color & 0xFF);
-
-    return (u16)(((r >> 3) << 11) |
-                  ((g >> 2) << 5) |
-                  (b >> 3));
-}
-
 static int nimg_validate(const u8* data, u32 size, const nimg_header_t** out_header) {
     const nimg_header_t* h;
     u32 pixel_bytes;
@@ -65,43 +55,6 @@ static int nimg_validate(const u8* data, u32 size, const nimg_header_t** out_hea
     return 1;
 }
 
-static void image_draw_nimg_row(u32 dst_x, u32 dst_y, const u32* src_pixels, u32 count) {
-    u32 bpp = fb_bpp();
-    u32 pitch = fb_pitch();
-    u32 bytes_per_pixel = (bpp + 7) / 8;
-    u8* dest = (u8*)(unsigned long)fb_phys_addr() + dst_y * pitch + dst_x * bytes_per_pixel;
-
-    if (bpp == 32) {
-        u32* pixel = (u32*)dest;
-
-        for (u32 i = 0; i < count; i++) {
-            pixel[i] = src_pixels[i];
-        }
-
-        return;
-    }
-
-    if (bpp == 24) {
-        u8* pixel = dest;
-
-        for (u32 i = 0; i < count; i++) {
-            u32 color = src_pixels[i];
-            pixel[0] = (u8)(color & 0xFF);
-            pixel[1] = (u8)((color >> 8) & 0xFF);
-            pixel[2] = (u8)((color >> 16) & 0xFF);
-            pixel += 3;
-        }
-
-        return;
-    }
-
-    u16* pixel = (u16*)dest;
-
-    for (u32 i = 0; i < count; i++) {
-        pixel[i] = image_color_to_rgb565(src_pixels[i]);
-    }
-}
-
 int image_draw_nimg_buffer(const u8* data, u32 size, u32 dst_x, u32 dst_y) {
     const nimg_header_t* h;
     const u32* pixels;
@@ -138,7 +91,7 @@ int image_draw_nimg_buffer(const u8* data, u32 size, u32 dst_x, u32 dst_y) {
     }
 
     for (u32 row = 0; row < draw_height; row++) {
-        image_draw_nimg_row(dst_x, dst_y + row, pixels + row * h->width, draw_width);
+        fb_draw_xrgb32_row(dst_x, dst_y + row, pixels + row * h->width, draw_width);
     }
 
     return 1;

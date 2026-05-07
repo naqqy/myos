@@ -1,0 +1,26 @@
+{
+  "configurations": [
+    {
+      "name": "WSL/Linux",
+      "includePath": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/kernel",
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/graphics",
+        "${workspaceFolder}/apps",
+        "/usr/include/efi",
+        "/usr/include/efi/x86_64",
+        "/usr/include"
+      ],
+      "defines": [
+        "__GNUC__",
+        "__x86_64__",
+        "EFI_FUNCTION_WRAPPER"
+      ],
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu17",
+      "intelliSenseMode": "linux-gcc-x64"
+    }
+  ],
+  "version": 4
+}

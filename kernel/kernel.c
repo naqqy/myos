@@ -174,6 +174,28 @@ static int raw_key_pop(void) {
     return (int)c;
 }
 
+static u32 irq_save_disable(void) {
+    u32 flags;
+
+    __asm__ volatile ("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static void irq_restore(u32 flags) {
+    if (flags & 0x200u) {
+        __asm__ volatile ("sti");
+    }
+}
+
+static void raw_key_clear(void) {
+    u32 flags = irq_save_disable();
+
+    raw_key_head = 0;
+    raw_key_tail = 0;
+
+    irq_restore(flags);
+}
+
 int kernel_poll_key(void) {
     int c;
 
@@ -207,10 +229,7 @@ void kernel_set_raw_input(int enabled) {
     /*
      * Clear stale keys when switching modes.
      */
-    preempt_disable();
-    raw_key_head = 0;
-    raw_key_tail = 0;
-    preempt_enable();
+    raw_key_clear();
 }
 
 static void outb(u16 port, u8 value) {
@@ -1052,6 +1071,8 @@ void print_hex32(u32 value) {
 }
 
 static void wait_for_any_key(void) {
+    raw_key_clear();
+    swallow_next_key = 1;
     key_pressed_flag = 0;
 
     while (!key_pressed_flag) {
@@ -1059,6 +1080,8 @@ static void wait_for_any_key(void) {
     }
 
     key_pressed_flag = 0;
+    swallow_next_key = 0;
+    raw_key_clear();
 }
 
 void term_backspace(void) {
