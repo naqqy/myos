@@ -1,0 +1,24 @@
+#ifndef PAGING64_H
+#define PAGING64_H
+
+#include "naq_boot_info.h"
+
+#define PAGE64_PRESENT  0x001ull
+#define PAGE64_WRITABLE 0x002ull
+#define PAGE64_USER     0x004ull
+#define PAGE64_HUGE     0x080ull
+
+#define PAGE64_SIZE_4K  4096ull
+#define PAGE64_SIZE_2M  0x200000ull
+
+int paging64_init(const naq_boot_info_t* boot);
+
+int paging64_identity_map_range(nq_u64 base, nq_u64 length, nq_u64 flags);
+
+nq_u64 paging64_kernel_pml4(void);
+nq_u64 paging64_mapped_2m_pages(void);
+nq_u64 paging64_table_pages(void);
+
+void paging64_print_summary(void);
+
+#endif

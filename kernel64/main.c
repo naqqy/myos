@@ -1,324 +1,130 @@
 #include "naq_boot_info.h"
-#include "font8x8.h"
+#include "k64_console.h"
 
-#define K64_CELL_W 8u
-#define K64_CELL_H 16u
+#include "arch/x86_64/gdt64.h"
+#include "arch/x86_64/idt64.h"
+#include "arch/x86_64/irq64.h"
+#include "arch/x86_64/timer64.h"
 
-static naq_boot_info_t* g_boot = 0;
+#include "mm/memmap64.h"
+#include "mm/pmm64.h"
+#include "mm/paging64.h"
+#include "mm/kmem64.h"
 
-static nq_u32 g_cols = 0;
-static nq_u32 g_rows = 0;
-static nq_u32 g_cursor_col = 0;
-static nq_u32 g_cursor_row = 0;
+#include "input/kinput64.h"
 
-static nq_u32 k64_make_pixel(nq_u8 r, nq_u8 g, nq_u8 b) {
-    if (!g_boot) {
-        return 0;
-    }
+#include "shell/shell64.h"
 
-    /*
-     * UEFI GOP:
-     * 0 = RGBx
-     * 1 = BGRx
-     */
-    if (g_boot->framebuffer_pixel_format == 0) {
-        return ((nq_u32)r) |
-               ((nq_u32)g << 8) |
-               ((nq_u32)b << 16);
-    }
-
-    return ((nq_u32)b) |
-           ((nq_u32)g << 8) |
-           ((nq_u32)r << 16);
-}
-
-static void k64_put_pixel(nq_u32 x, nq_u32 y, nq_u32 color) {
-    if (!g_boot ||
-        g_boot->magic != NAQ_BOOT_INFO_MAGIC ||
-        g_boot->version != NAQ_BOOT_INFO_VERSION) {
-        return;
-    }
-
-    if (x >= g_boot->framebuffer_width ||
-        y >= g_boot->framebuffer_height) {
-        return;
-    }
-
-    volatile nq_u32* fb = (volatile nq_u32*)g_boot->framebuffer_base;
-
-    nq_u64 index =
-        ((nq_u64)y * g_boot->framebuffer_pixels_per_scanline) + x;
-
-    fb[index] = color;
-}
-
-static void k64_fill_rect(
-    nq_u32 x,
-    nq_u32 y,
-    nq_u32 w,
-    nq_u32 h,
-    nq_u32 color
-) {
-    if (!g_boot) {
-        return;
-    }
-
-    if (x >= g_boot->framebuffer_width ||
-        y >= g_boot->framebuffer_height) {
-        return;
-    }
-
-    if (w > g_boot->framebuffer_width - x) {
-        w = g_boot->framebuffer_width - x;
-    }
-
-    if (h > g_boot->framebuffer_height - y) {
-        h = g_boot->framebuffer_height - y;
-    }
-
-    for (nq_u32 yy = 0; yy < h; yy++) {
-        for (nq_u32 xx = 0; xx < w; xx++) {
-            k64_put_pixel(x + xx, y + yy, color);
-        }
+static void halt_forever(void) {
+    for (;;) {
+        __asm__ volatile ("hlt");
     }
 }
 
-static void k64_clear(void) {
-    nq_u32 bg = k64_make_pixel(0, 0, 0);
+static void kernel64_test_pmm(void) {
+    nq_u64 test_frame = pmm64_alloc_frame();
 
-    k64_fill_rect(
-        0,
-        0,
-        g_boot->framebuffer_width,
-        g_boot->framebuffer_height,
-        bg
-    );
+    k64_print("PMM64 test frame: ");
+    k64_print_hex64(test_frame);
+    k64_print("\n");
 
-    g_cursor_col = 0;
-    g_cursor_row = 0;
+    if (test_frame) {
+        pmm64_free_frame(test_frame);
+        k64_print("PMM64 test frame freed.\n");
+    }
+
+    k64_print("\n");
 }
 
-static void k64_draw_char_at(nq_u32 col, nq_u32 row, char c) {
-    const unsigned char* glyph;
-    nq_u32 px = col * K64_CELL_W;
-    nq_u32 py = row * K64_CELL_H;
+static void kernel64_test_kmem(void) {
+    void* heap_test_a = kmalloc64(64);
+    void* heap_test_b = kmalloc64(4096);
+    void* heap_test_c = kmalloc64(12345);
 
-    nq_u32 fg = k64_make_pixel(234, 234, 234);
-    nq_u32 bg = k64_make_pixel(0, 0, 0);
+    k64_print("KMEM64 test A: ");
+    k64_print_hex64((nq_u64)heap_test_a);
+    k64_print("\n");
 
-    if (col >= g_cols || row >= g_rows) {
-        return;
-    }
+    k64_print("KMEM64 test B: ");
+    k64_print_hex64((nq_u64)heap_test_b);
+    k64_print("\n");
 
-    glyph = font8x8_get(c);
+    k64_print("KMEM64 test C: ");
+    k64_print_hex64((nq_u64)heap_test_c);
+    k64_print("\n");
 
-    for (nq_u32 gy = 0; gy < 8; gy++) {
-        unsigned char bits = glyph[gy];
+    kfree64(heap_test_a);
+    kfree64(heap_test_b);
+    kfree64(heap_test_c);
 
-        for (nq_u32 gx = 0; gx < 8; gx++) {
-            nq_u32 color = (bits & (0x80u >> gx)) ? fg : bg;
+    k64_print("KMEM64 test allocations freed.\n");
+//    kmem64_print_summary();
 
-            /*
-             * Draw 8x8 font doubled vertically into 8x16 cells.
-             */
-            k64_put_pixel(px + gx, py + gy * 2, color);
-            k64_put_pixel(px + gx, py + gy * 2 + 1, color);
-        }
-    }
-}
-
-static void k64_newline(void) {
-    g_cursor_col = 0;
-    g_cursor_row++;
-
-    /*
-     * Temporary behavior: clear when we hit bottom.
-     * Real scrolling can come later.
-     */
-    if (g_cursor_row >= g_rows) {
-        k64_clear();
-    }
-}
-
-static void k64_putchar(char c) {
-    if (c == '\n') {
-        k64_newline();
-        return;
-    }
-
-    if (c == '\r') {
-        g_cursor_col = 0;
-        return;
-    }
-
-    if (c == '\t') {
-        do {
-            k64_putchar(' ');
-        } while ((g_cursor_col & 3u) != 0);
-        return;
-    }
-
-    if ((nq_u8)c < 32) {
-        return;
-    }
-
-    k64_draw_char_at(g_cursor_col, g_cursor_row, c);
-
-    g_cursor_col++;
-
-    if (g_cursor_col >= g_cols) {
-        k64_newline();
-    }
-}
-
-static void k64_print(const char* s) {
-    if (!s) {
-        return;
-    }
-
-    while (*s) {
-        k64_putchar(*s++);
-    }
-}
-
-static void k64_print_hex64(nq_u64 value) {
-    static const char hex[] = "0123456789ABCDEF";
-
-    k64_print("0x");
-
-    for (int i = 15; i >= 0; i--) {
-        k64_putchar(hex[(value >> ((nq_u32)i * 4u)) & 0xFu]);
-    }
-}
-
-static void k64_print_dec64(nq_u64 value) {
-    char buf[32];
-    int i = 0;
-
-    if (value == 0) {
-        k64_putchar('0');
-        return;
-    }
-
-    while (value > 0 && i < (int)sizeof(buf)) {
-        buf[i++] = (char)('0' + (value % 10u));
-        value /= 10u;
-    }
-
-    while (i > 0) {
-        k64_putchar(buf[--i]);
-    }
-}
-
-static void k64_draw_header(void) {
-    nq_u32 bar = k64_make_pixel(0, 32, 64);
-    nq_u32 accent = k64_make_pixel(0, 220, 255);
-
-    k64_fill_rect(0, 0, g_boot->framebuffer_width, 40, bar);
-    k64_fill_rect(0, 39, g_boot->framebuffer_width, 2, accent);
-
-    g_cursor_col = 2;
-    g_cursor_row = 1;
-
-    k64_print("NAQ OS 64-bit Kernel");
-
-    g_cursor_col = 0;
-    g_cursor_row = 3;
-}
-
-static void k64_console_init(naq_boot_info_t* boot) {
-    g_boot = boot;
-
-    if (!g_boot ||
-        g_boot->magic != NAQ_BOOT_INFO_MAGIC ||
-        g_boot->version != NAQ_BOOT_INFO_VERSION) {
-        for (;;) {
-            __asm__ volatile ("hlt");
-        }
-    }
-
-    g_cols = g_boot->framebuffer_width / K64_CELL_W;
-    g_rows = g_boot->framebuffer_height / K64_CELL_H;
-
-    if (g_cols == 0) {
-        g_cols = 1;
-    }
-
-    if (g_rows == 0) {
-        g_rows = 1;
-    }
-
-    k64_clear();
-    k64_draw_header();
+    k64_print("\n");
 }
 
 void kmain64(naq_boot_info_t* boot) {
     k64_console_init(boot);
 
-    k64_print("kmain64 entered after ExitBootServices.\n\n");
+    k64_print("kmain64 entered after ExitBootServices.\n");
 
-    k64_print("Framebuffer: ");
-    k64_print_dec64(boot->framebuffer_width);
-    k64_print("x");
-    k64_print_dec64(boot->framebuffer_height);
+    gdt64_init(boot);
+    idt64_init();
+
+    memmap64_init(boot);
+    k64_print("UEFI memory map parsed.\n");
+//    memmap64_print_summary();
     k64_print("\n");
 
-    k64_print("Framebuffer base: ");
-    k64_print_hex64(boot->framebuffer_base);
-    k64_print("\n");
+    if (!pmm64_init(boot)) {
+        k64_print("PMM64 initialization failed.\n");
+        halt_forever();
+    }
 
-    k64_print("Framebuffer size: ");
-    k64_print_dec64(boot->framebuffer_size);
-    k64_print(" bytes\n");
-
-    k64_print("Pixels per scanline: ");
-    k64_print_dec64(boot->framebuffer_pixels_per_scanline);
-    k64_print("\n");
-
-    k64_print("Pixel format: ");
-    k64_print_dec64(boot->framebuffer_pixel_format);
-    k64_print("\n\n");
-
-    k64_print("Kernel load addr: ");
+    k64_print("Kernel reserved base: ");
     k64_print_hex64(boot->kernel_load_addr);
     k64_print("\n");
 
-    k64_print("Kernel size: ");
-    k64_print_dec64(boot->kernel_size);
-    k64_print(" bytes\n\n");
-
-    k64_print("Stack base: ");
-    k64_print_hex64(boot->stack_base);
+    k64_print("Kernel reserved minimum end: ");
+    k64_print_hex64(boot->kernel_load_addr + (4ull * 1024ull * 1024ull));
     k64_print("\n");
 
-    k64_print("Stack size: ");
-    k64_print_dec64(boot->stack_size);
-    k64_print(" bytes\n");
+//    pmm64_print_summary();
+    kernel64_test_pmm();
 
-    k64_print("Stack top: ");
-    k64_print_hex64(boot->stack_top);
-    k64_print("\n\n");
+    if (!paging64_init(boot)) {
+        k64_print("Paging64 initialization failed.\n");
+        halt_forever();
+    }
 
-    k64_print("UEFI memory map: ");
-    k64_print_hex64(boot->memory_map);
+//    paging64_print_summary();
     k64_print("\n");
 
-    k64_print("Memory map size: ");
-    k64_print_dec64(boot->memory_map_size);
-    k64_print(" bytes\n");
+    if (!kmem64_init(16)) {
+        k64_print("KMEM64 initialization failed.\n");
+        halt_forever();
+    }
 
-    k64_print("Memory descriptor size: ");
-    k64_print_dec64(boot->memory_map_desc_size);
-    k64_print(" bytes\n");
+//    kmem64_print_summary();
+    kernel64_test_kmem();
 
-    k64_print("Memory descriptor version: ");
-    k64_print_dec64(boot->memory_map_desc_version);
-    k64_print("\n\n");
+    k64_print("Kernel64 foundation initialized.\n");
 
-    k64_print("UEFI Boot Services exited successfully.\n");
-    k64_print("Kernel64 is running on its own stack.\n");
+    kinput64_init();
+    irq64_init(100);
+
+    k64_print("Timer Frequency: ");
+    k64_print_dec64(timer64_get_frequency());
+    k64_print(" Hz\n");
+
+    k64_print("Interrupts enabled.\n");
+
+    shell64_init();
+
+    __asm__ volatile ("sti");
 
     for (;;) {
+        shell64_poll();
         __asm__ volatile ("hlt");
     }
 }

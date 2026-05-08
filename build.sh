@@ -137,6 +137,54 @@ KERNEL_BIN="$BUILD_DIR/kernel.bin"
 FS_IMG="$BUILD_DIR/fs.img"
 OS_IMG="$BUILD_DIR/os.img"
 
+QEMU64="${QEMU64:-qemu-system-x86_64}"
+
+OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
+OVMF_VARS_TEMPLATE="${OVMF_VARS_TEMPLATE:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
+OVMF_VARS="$BUILD_DIR/OVMF_VARS.fd"
+
+KERNEL64_IDT_C="$KERNEL64_DIR/arch/x86_64/idt64.c"
+KERNEL64_ISR_ASM="$KERNEL64_DIR/arch/x86_64/isr64.asm"
+
+KERNEL64_IDT_OBJ="$BUILD_DIR/idt64.o"
+KERNEL64_ISR_OBJ="$BUILD_DIR/isr64.o"
+
+KERNEL64_MEMMAP_C="$KERNEL64_DIR/mm/memmap64.c"
+KERNEL64_MEMMAP_OBJ="$BUILD_DIR/memmap64.o"
+
+KERNEL64_PMM_C="$KERNEL64_DIR/mm/pmm64.c"
+KERNEL64_PMM_OBJ="$BUILD_DIR/pmm64.o"
+
+KERNEL64_PAGING_C="$KERNEL64_DIR/mm/paging64.c"
+KERNEL64_PAGING_OBJ="$BUILD_DIR/paging64.o"
+
+KERNEL64_KMEM_C="$KERNEL64_DIR/mm/kmem64.c"
+KERNEL64_KMEM_OBJ="$BUILD_DIR/kmem64.o"
+
+KERNEL64_GDT_C="$KERNEL64_DIR/arch/x86_64/gdt64.c"
+KERNEL64_GDT_ASM="$KERNEL64_DIR/arch/x86_64/gdt64.asm"
+
+KERNEL64_GDT_OBJ="$BUILD_DIR/gdt64.o"
+KERNEL64_GDT_ASM_OBJ="$BUILD_DIR/gdt64_asm.o"
+
+KERNEL64_CONSOLE_C="$KERNEL64_DIR/console/fb_console.c"
+KERNEL64_CONSOLE_OBJ="$BUILD_DIR/fb_console64.o"
+
+KERNEL64_IRQ_C="$KERNEL64_DIR/arch/x86_64/irq64.c"
+KERNEL64_IRQ_OBJ="$BUILD_DIR/irq64.o"
+
+KERNEL64_INPUT_C="$KERNEL64_DIR/input/kinput64.c"
+KERNEL64_INPUT_OBJ="$BUILD_DIR/kinput64.o"
+
+KERNEL64_POWER_C="$KERNEL64_DIR/arch/x86_64/power64.c"
+KERNEL64_POWER_OBJ="$BUILD_DIR/power64.o"
+
+KERNEL64_TIMER_C="$KERNEL64_DIR/arch/x86_64/timer64.c"
+KERNEL64_TIMER_OBJ="$BUILD_DIR/timer64.o"
+
+KERNEL64_SHELL_C="$KERNEL64_DIR/shell/shell64.c"
+KERNEL64_SHELL_OBJ="$BUILD_DIR/shell64.o"
+
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 VBOX_VM_NAME="${VBOX_VM_NAME:-NAQ OS}"
 VBOX_VDI="$BUILD_DIR/naqos.vdi"
@@ -196,6 +244,24 @@ need_cmd() {
     echo "Error: required command not found: $1" >&2
     exit 1
   fi
+}
+
+find_ovmf_file() {
+  local kind="$1"
+  local found=""
+
+  found="$(find /usr/share -type f -name "*OVMF*${kind}*.fd" 2>/dev/null \
+    | grep -vi secboot \
+    | grep -vi snakeoil \
+    | grep -vi '\.ms\.' \
+    | head -n 1 || true)"
+
+  if [[ -n "$found" ]]; then
+    echo "$found"
+    return 0
+  fi
+
+  return 1
 }
 
 clean() {
@@ -394,6 +460,204 @@ build_kernel64() {
     -c "$FONT8X8_C" \
     -o "$KERNEL64_FONT8X8_OBJ"
 
+  msg "Building 64-bit ISR assembly"
+  "$NASM" -f elf64 "$KERNEL64_ISR_ASM" -o "$KERNEL64_ISR_OBJ"
+
+  msg "Compiling 64-bit memory map parser"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_MEMMAP_C" \
+    -o "$KERNEL64_MEMMAP_OBJ"
+
+  msg "Compiling 64-bit IDT"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_IDT_C" \
+    -o "$KERNEL64_IDT_OBJ"
+
+  msg "Compiling 64-bit PMM"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_PMM_C" \
+    -o "$KERNEL64_PMM_OBJ"
+
+  msg "Compiling 64-bit paging"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_PAGING_C" \
+    -o "$KERNEL64_PAGING_OBJ"
+
+  msg "Compiling 64-bit kernel heap"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_KMEM_C" \
+    -o "$KERNEL64_KMEM_OBJ"
+
+      msg "Building 64-bit GDT assembly"
+  "$NASM" -f elf64 "$KERNEL64_GDT_ASM" -o "$KERNEL64_GDT_ASM_OBJ"
+
+  msg "Compiling 64-bit GDT/TSS"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_GDT_C" \
+    -o "$KERNEL64_GDT_OBJ"
+
+  msg "Compiling 64-bit framebuffer console"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_CONSOLE_C" \
+    -o "$KERNEL64_CONSOLE_OBJ"
+
+  msg "Compiling 64-bit IRQ/PIC/PIT/keyboard"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_IRQ_C" \
+    -o "$KERNEL64_IRQ_OBJ"
+
+  msg "Compiling 64-bit keyboard input queue"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_INPUT_C" \
+    -o "$KERNEL64_INPUT_OBJ"
+
+  msg "Compiling 64-bit power controls"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_POWER_C" \
+    -o "$KERNEL64_POWER_OBJ"
+
+  msg "Compiling 64-bit timer"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_TIMER_C" \
+    -o "$KERNEL64_TIMER_OBJ"
+
+  msg "Compiling 64-bit shell"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_SHELL_C" \
+    -o "$KERNEL64_SHELL_OBJ"
+
   msg "Linking 64-bit kernel ELF"
   "$LD" \
     -m elf_x86_64 \
@@ -401,7 +665,21 @@ build_kernel64() {
     -o "$KERNEL64_ELF" \
     "$KERNEL64_ENTRY_OBJ" \
     "$KERNEL64_OBJ" \
-    "$KERNEL64_FONT8X8_OBJ"
+    "$KERNEL64_FONT8X8_OBJ" \
+    "$KERNEL64_ISR_OBJ" \
+    "$KERNEL64_IDT_OBJ" \
+    "$KERNEL64_MEMMAP_OBJ" \
+    "$KERNEL64_PMM_OBJ" \
+    "$KERNEL64_PAGING_OBJ" \
+    "$KERNEL64_KMEM_OBJ" \
+    "$KERNEL64_GDT_ASM_OBJ" \
+    "$KERNEL64_GDT_OBJ" \
+    "$KERNEL64_CONSOLE_OBJ" \
+    "$KERNEL64_IRQ_OBJ" \
+    "$KERNEL64_INPUT_OBJ" \
+    "$KERNEL64_POWER_OBJ" \
+    "$KERNEL64_TIMER_OBJ" \
+    "$KERNEL64_SHELL_OBJ"
 
   msg "Converting 64-bit kernel ELF to flat binary"
   "$OBJCOPY" -O binary "$KERNEL64_ELF" "$KERNEL64_BIN"
@@ -671,6 +949,67 @@ run_qemu() {
     -drive format=raw,file="$OS_IMG"
 }
 
+run_qemu_uefi() {
+  msg "Running UEFI image in QEMU"
+
+  if ! command -v "$QEMU64" >/dev/null 2>&1; then
+    echo "Error: $QEMU64 not found." >&2
+    echo "Install it with:" >&2
+    echo "  sudo apt install qemu-system-x86" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$UEFI_IMG" ]]; then
+    echo "Error: $UEFI_IMG does not exist." >&2
+    echo "Build it first with:" >&2
+    echo "  ./build.sh uefi" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$OVMF_CODE" ]]; then
+    local detected_code
+    detected_code="$(find_ovmf_file CODE)" || {
+      echo "Error: could not find OVMF_CODE fd file." >&2
+      echo "Install OVMF with:" >&2
+      echo "  sudo apt install ovmf" >&2
+      exit 1
+    }
+
+    OVMF_CODE="$detected_code"
+  fi
+
+  if [[ ! -f "$OVMF_VARS_TEMPLATE" ]]; then
+    local detected_vars
+    detected_vars="$(find_ovmf_file VARS)" || {
+      echo "Error: could not find OVMF_VARS fd file." >&2
+      echo "Install OVMF with:" >&2
+      echo "  sudo apt install ovmf" >&2
+      exit 1
+    }
+
+    OVMF_VARS_TEMPLATE="$detected_vars"
+  fi
+
+  mkdir -p "$BUILD_DIR"
+  cp "$OVMF_VARS_TEMPLATE" "$OVMF_VARS"
+
+  echo "OVMF_CODE: $OVMF_CODE"
+  echo "OVMF_VARS: $OVMF_VARS"
+  echo "UEFI_IMG : $UEFI_IMG"
+
+  "$QEMU64" \
+    -machine q35 \
+    -m 256M \
+    -cpu qemu64 \
+    -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+    -drive if=pflash,format=raw,file="$OVMF_VARS" \
+    -drive if=ide,format=raw,file="$UEFI_IMG" \
+    -vga std \
+    -monitor none \
+    -serial none \
+    -net none
+}
+
 build_vbox_disk() {
   msg "Converting raw OS image to VirtualBox VDI"
 
@@ -758,6 +1097,7 @@ Commands:
   vbox-win  Build and export a Windows VirtualBox VDI to C:\naqos
   uefi      Build UEFI BOOTX64.EFI and uefi.img
   qemu      Run in QEMU
+  uefi-qemu Build UEFI image and run it in QEMU/OVMF
   help      Show this help
 
 Environment:
@@ -854,6 +1194,14 @@ case "$cmd" in
     ;;
   qemu)
     run_qemu
+    ;;
+  uefi-qemu)
+    check_tools
+    clean
+    build_kernel64
+    build_uefi
+    build_uefi_image
+    run_qemu_uefi
     ;;
   vdi)
     check_tools

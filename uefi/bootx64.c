@@ -2,9 +2,19 @@
 #include <efilib.h>
 #include "naq_boot_info.h"
 
-#define UEFI_KERNEL64_LOAD_ADDR 0x00100000ULL
-#define UEFI_KERNEL64_PATH      L"KERNEL64.BIN"
-#define UEFI_KERNEL_STACK_PAGES 16u  /* 64 KiB */
+#define UEFI_KERNEL64_LOAD_ADDR       0x00100000ULL
+#define UEFI_KERNEL64_PATH            L"KERNEL64.BIN"
+
+/*
+ * 16 pages = 64 KiB kernel stack.
+ */
+#define UEFI_KERNEL_STACK_PAGES       16u
+
+/*
+ * Early kernel reservation.
+ * Covers flat binary + BSS/static storage until we have exact ELF/kernel-end metadata.
+ */
+#define UEFI_KERNEL64_MIN_ALLOC_PAGES 1024u  /* 4 MiB */
 
 static const CHAR16* pixel_format_name(EFI_GRAPHICS_PIXEL_FORMAT fmt) {
     switch (fmt) {
@@ -21,139 +31,6 @@ static const CHAR16* pixel_format_name(EFI_GRAPHICS_PIXEL_FORMAT fmt) {
     }
 }
 
-static UINT32 make_pixel(EFI_GRAPHICS_OUTPUT_PROTOCOL* gop, UINT8 r, UINT8 g, UINT8 b) {
-    EFI_GRAPHICS_PIXEL_FORMAT fmt = gop->Mode->Info->PixelFormat;
-
-    if (fmt == PixelRedGreenBlueReserved8BitPerColor) {
-        return ((UINT32)r) | ((UINT32)g << 8) | ((UINT32)b << 16);
-    }
-
-    if (fmt == PixelBlueGreenRedReserved8BitPerColor) {
-        return ((UINT32)b) | ((UINT32)g << 8) | ((UINT32)r << 16);
-    }
-
-    /*
-     * Fallback value. PixelBitMask/BltOnly should use GOP Blt instead.
-     */
-    return ((UINT32)b) | ((UINT32)g << 8) | ((UINT32)r << 16);
-}
-
-static void draw_rect_direct(
-    EFI_GRAPHICS_OUTPUT_PROTOCOL* gop,
-    UINTN x,
-    UINTN y,
-    UINTN w,
-    UINTN h,
-    UINT8 r,
-    UINT8 g,
-    UINT8 b
-) {
-    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION* info;
-    UINTN screen_w;
-    UINTN screen_h;
-    UINTN pixels_per_scanline;
-    EFI_GRAPHICS_PIXEL_FORMAT fmt;
-
-    if (!gop || !gop->Mode || !gop->Mode->Info) {
-        return;
-    }
-
-    info = gop->Mode->Info;
-    screen_w = info->HorizontalResolution;
-    screen_h = info->VerticalResolution;
-    pixels_per_scanline = info->PixelsPerScanLine;
-    fmt = info->PixelFormat;
-
-    if (x >= screen_w || y >= screen_h) {
-        return;
-    }
-
-    if (w > screen_w - x) {
-        w = screen_w - x;
-    }
-
-    if (h > screen_h - y) {
-        h = screen_h - y;
-    }
-
-    /*
-     * Direct framebuffer write for common 32-bit RGB/BGR formats.
-     */
-    if (fmt == PixelRedGreenBlueReserved8BitPerColor ||
-        fmt == PixelBlueGreenRedReserved8BitPerColor) {
-        UINT32* fb = (UINT32*)(UINTN)gop->Mode->FrameBufferBase;
-        UINT32 color = make_pixel(gop, r, g, b);
-
-        for (UINTN yy = 0; yy < h; yy++) {
-            UINT32* row = fb + ((y + yy) * pixels_per_scanline) + x;
-
-            for (UINTN xx = 0; xx < w; xx++) {
-                row[xx] = color;
-            }
-        }
-
-        return;
-    }
-
-    /*
-     * Safe fallback for PixelBitMask/BltOnly/etc.
-     */
-    EFI_GRAPHICS_OUTPUT_BLT_PIXEL px;
-    px.Red = r;
-    px.Green = g;
-    px.Blue = b;
-    px.Reserved = 0;
-
-    uefi_call_wrapper(
-        gop->Blt,
-        10,
-        gop,
-        &px,
-        EfiBltVideoFill,
-        0,
-        0,
-        x,
-        y,
-        w,
-        h,
-        0
-    );
-}
-
-static void draw_gop_test_pattern(EFI_GRAPHICS_OUTPUT_PROTOCOL* gop) {
-    UINTN width;
-    UINTN height;
-    UINTN cx;
-    UINTN cy;
-
-    if (!gop || !gop->Mode || !gop->Mode->Info) {
-        return;
-    }
-
-    width = gop->Mode->Info->HorizontalResolution;
-    height = gop->Mode->Info->VerticalResolution;
-
-    /*
-     * Background.
-     */
-    draw_rect_direct(gop, 0, 0, width, height, 8, 12, 24);
-
-    /*
-     * Centered test blocks.
-     */
-    cx = width / 2;
-    cy = height / 2;
-
-    draw_rect_direct(gop, cx - 220, cy - 90, 140, 140, 0, 180, 255);
-    draw_rect_direct(gop, cx - 70,  cy - 90, 140, 140, 120, 80, 255);
-    draw_rect_direct(gop, cx + 80,  cy - 90, 140, 140, 0, 255, 160);
-
-    /*
-     * Bottom accent bar.
-     */
-    draw_rect_direct(gop, 0, height - 48, width, 48, 0, 60, 120);
-    draw_rect_direct(gop, 0, height - 50, width, 2, 0, 220, 255);
-}
 
 static EFI_STATUS locate_gop(EFI_GRAPHICS_OUTPUT_PROTOCOL** out_gop) {
     EFI_STATUS status;
@@ -378,6 +255,18 @@ static EFI_STATUS load_file_from_boot_volume(
 
 static naq_boot_info_t g_boot_info;
 
+static void zero_memory(void* ptr, UINTN size) {
+    UINT8* p = (UINT8*)ptr;
+
+    if (!p) {
+        return;
+    }
+
+    for (UINTN i = 0; i < size; i++) {
+        p[i] = 0;
+    }
+}
+
 static EFI_STATUS load_kernel64_to_fixed_address(
     EFI_HANDLE image_handle,
     EFI_GRAPHICS_OUTPUT_PROTOCOL* gop,
@@ -387,7 +276,11 @@ static EFI_STATUS load_kernel64_to_fixed_address(
     EFI_STATUS status;
     VOID* file_buffer = NULL;
     UINTN file_size = 0;
-    UINTN pages = 0;
+
+    UINTN file_pages = 0;
+    UINTN alloc_pages = 0;
+    UINTN alloc_bytes = 0;
+
     EFI_PHYSICAL_ADDRESS requested_addr = load_addr;
 
     if (!out_kernel_size) {
@@ -412,14 +305,21 @@ static EFI_STATUS load_kernel64_to_fixed_address(
         return EFI_LOAD_ERROR;
     }
 
-    pages = (file_size + 0xFFF) / 0x1000;
+    file_pages = (file_size + 0xFFFu) / 0x1000u;
+    alloc_pages = file_pages;
+
+    if (alloc_pages < UEFI_KERNEL64_MIN_ALLOC_PAGES) {
+        alloc_pages = UEFI_KERNEL64_MIN_ALLOC_PAGES;
+    }
+
+    alloc_bytes = alloc_pages * 4096u;
 
     status = uefi_call_wrapper(
         BS->AllocatePages,
         4,
         AllocateAddress,
         EfiLoaderCode,
-        pages,
+        alloc_pages,
         &requested_addr
     );
 
@@ -428,6 +328,15 @@ static EFI_STATUS load_kernel64_to_fixed_address(
         return status;
     }
 
+    /*
+     * Clear the entire reserved kernel region.
+     * This protects early .bss/static storage when loading a flat binary.
+     */
+    zero_memory((VOID*)(UINTN)load_addr, alloc_bytes);
+
+    /*
+     * Copy the flat binary into the start of the reserved region.
+     */
     CopyMem((VOID*)(UINTN)load_addr, file_buffer, file_size);
 
     uefi_call_wrapper(BS->FreePool, 1, file_buffer);
@@ -456,22 +365,20 @@ static EFI_STATUS load_kernel64_to_fixed_address(
     }
 
     g_boot_info.kernel_load_addr = (nq_u64)load_addr;
-    g_boot_info.kernel_size = (nq_u64)file_size;
 
+    /*
+     * Important:
+     * This is the reserved kernel memory size, not only the file size.
+     * PMM64 uses this to avoid handing kernel-owned memory to kmem64.
+     */
+    g_boot_info.kernel_size = (nq_u64)alloc_bytes;
+
+    /*
+     * Return the file size for display only.
+     */
     *out_kernel_size = file_size;
+
     return EFI_SUCCESS;
-}
-
-static void zero_memory(void* ptr, UINTN size) {
-    UINT8* p = (UINT8*)ptr;
-
-    if (!p) {
-        return;
-    }
-
-    for (UINTN i = 0; i < size; i++) {
-        p[i] = 0;
-    }
 }
 
 static EFI_STATUS allocate_kernel_stack(naq_boot_info_t* boot) {
@@ -651,7 +558,8 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     }
 
     Print(L"KERNEL64.BIN loaded successfully.\r\n");
-    Print(L"Kernel64 size: %lu bytes\r\n", kernel64_size);
+    Print(L"Kernel64 file size: %lu bytes\r\n", kernel64_size);
+    Print(L"Kernel64 reserved size: %lu bytes\r\n", g_boot_info.kernel_size);
 
     Print(L"Allocating kernel64 stack...\r\n");
 
