@@ -28,7 +28,7 @@ vfs64_mount_root()
 
 12 Add splash command or boot splash display. // DONE
 
-13 Port terminal sessions/history. // TODO
+13 Port terminal sessions/history. // DONE
 
 14 Add FAT32 write support: // TODO
 mkdir
