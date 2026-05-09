@@ -1,0 +1,189 @@
+Date : 2026-05-08 17:03:03
+Directory : /home/naqqydev/myos
+Total : 131 files,  4646 codes, 220 comments, 1386 blanks, all 6252 lines
+
+Languages
++--------------+------------+------------+------------+------------+------------+
+| language     | files      | code       | comment    | blank      | total      |
++--------------+------------+------------+------------+------------+------------+
+| C            |         68 |      4,423 |        224 |      1,362 |      6,009 |
+| Shell Script |          2 |        669 |          0 |        116 |        785 |
+| C++          |         49 |        328 |         -6 |        115 |        437 |
+| Python       |          3 |         34 |          2 |         14 |         50 |
+| ARM          |          9 |       -808 |          0 |       -221 |     -1,029 |
++--------------+------------+------------+------------+------------+------------+
+
+Directories
++---------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                                | files      | code       | comment    | blank      | total      |
++---------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                                   |        131 |      4,646 |        220 |      1,386 |      6,252 |
+| . (Files)                                                           |          1 |      1,038 |         25 |        213 |      1,276 |
+| ..                                                                  |         52 |     -6,442 |       -297 |     -1,788 |     -8,527 |
+| ../..                                                               |         52 |     -6,442 |       -297 |     -1,788 |     -8,527 |
+| ../../..                                                            |         52 |     -6,442 |       -297 |     -1,788 |     -8,527 |
+| ../../../wsl.localhost                                              |         52 |     -6,442 |       -297 |     -1,788 |     -8,527 |
+| ../../../wsl.localhost/Ubuntu                                       |         52 |     -6,442 |       -297 |     -1,788 |     -8,527 |
+| ../../../wsl.localhost/Ubuntu/home                                  |         52 |     -6,442 |       -297 |     -1,788 |     -8,527 |
+| ../../../wsl.localhost/Ubuntu/home/naqqydev                         |         52 |     -6,442 |       -297 |     -1,788 |     -8,527 |
+| ../../../wsl.localhost/Ubuntu/home/naqqydev/myos                    |         52 |     -6,442 |       -297 |     -1,788 |     -8,527 |
+| ../../../wsl.localhost/Ubuntu/home/naqqydev/myos (Files)            |          1 |       -369 |        -25 |        -97 |       -491 |
+| ../../../wsl.localhost/Ubuntu/home/naqqydev/myos/apps               |         12 |       -679 |        -79 |       -188 |       -946 |
+| ../../../wsl.localhost/Ubuntu/home/naqqydev/myos/boot               |          2 |       -501 |          0 |       -145 |       -646 |
+| ../../../wsl.localhost/Ubuntu/home/naqqydev/myos/filesforlater      |          1 |       -167 |          0 |        -25 |       -192 |
+| ../../../wsl.localhost/Ubuntu/home/naqqydev/myos/kernel             |         35 |     -4,696 |       -189 |     -1,324 |     -6,209 |
+| ../../../wsl.localhost/Ubuntu/home/naqqydev/myos/tools              |          1 |        -30 |         -4 |         -9 |        -43 |
+| apps                                                                |         12 |        707 |         75 |        195 |        977 |
+| filesforlater                                                       |          1 |        167 |          0 |         25 |        192 |
+| graphics                                                            |          6 |        541 |          0 |        154 |        695 |
+| include                                                             |          1 |         50 |          4 |         15 |         69 |
+| kernel                                                              |         29 |      5,886 |        235 |      1,740 |      7,861 |
+| kernel64                                                            |         26 |      2,191 |        127 |        685 |      3,003 |
+| kernel64 (Files)                                                    |          2 |        101 |          5 |         40 |        146 |
+| kernel64/arch                                                       |         11 |        587 |         22 |        174 |        783 |
+| kernel64/arch/x86_64                                                |         11 |        587 |         22 |        174 |        783 |
+| kernel64/console                                                    |          1 |        204 |         13 |         59 |        276 |
+| kernel64/input                                                      |          2 |         68 |          3 |         25 |         96 |
+| kernel64/mm                                                         |          8 |      1,047 |         84 |        341 |      1,472 |
+| kernel64/shell                                                      |          2 |        184 |          0 |         46 |        230 |
+| tools                                                               |          2 |         64 |          6 |         23 |         93 |
+| uefi                                                                |          1 |        444 |         45 |        124 |        613 |
++---------------------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++---------------------------------------------------------------------+--------------+------------+------------+------------+------------+
+| filename                                                            | language     | code       | comment    | blank      | total      |
++---------------------------------------------------------------------+--------------+------------+------------+------------+------------+
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/apps/2dgame.c             | C            |       -191 |          0 |        -51 |       -242 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/apps/app_entry.asm        | ARM          |        -13 |          0 |         -4 |        -17 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/apps/badptr.c             | C            |         -6 |          0 |         -3 |         -9 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/apps/demo.c               | C            |         -6 |          0 |         -1 |         -7 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/apps/keytest.c            | C            |        -17 |          0 |         -6 |        -23 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/apps/spin.c               | C            |         -8 |          0 |         -3 |        -11 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/apps/syscall.h            | C++          |       -123 |        -47 |        -38 |       -208 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/apps/sysinfo.c            | C            |        -29 |          0 |         -6 |        -35 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/apps/systest.c            | C            |         -6 |          0 |         -2 |         -8 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/apps/uhello.c             | C            |        -10 |          0 |         -2 |        -12 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/apps/wolf3d.c             | C            |       -262 |        -32 |        -70 |       -364 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/apps/yt.c                 | C            |         -8 |          0 |         -2 |        -10 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/boot/boot.asm             | ARM          |        -59 |          0 |        -14 |        -73 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/boot/stage2.asm           | ARM          |       -442 |          0 |       -131 |       -573 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/build.sh                  | Shell Script |       -369 |        -25 |        -97 |       -491 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/filesforlater/com.c       | C            |       -167 |          0 |        -25 |       -192 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/context_switch.asm | ARM          |        -17 |          0 |         -5 |        -22 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/entry.asm          | ARM          |        -17 |          0 |         -7 |        -24 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/exec.c             | C            |       -353 |         -4 |        -90 |       -447 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/exec.h             | C++          |        -22 |          0 |        -11 |        -33 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/fat16.c            | C            |       -691 |         -8 |       -195 |       -894 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/fat16.h            | C++          |        -13 |        -11 |         -7 |        -31 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/gdt.c              | C            |        -92 |        -32 |        -23 |       -147 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/gdt.h              | C++          |        -13 |          0 |         -4 |        -17 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/gdt_flush.asm      | ARM          |        -20 |          0 |         -6 |        -26 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/isr.asm            | ARM          |       -146 |          0 |        -30 |       -176 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/kernel.c           | C            |       -765 |        -11 |       -202 |       -978 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/kmem.c             | C            |       -211 |        -12 |        -56 |       -279 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/kmem.h             | C++          |         -9 |          0 |         -4 |        -13 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/memmap.c           | C            |       -174 |         -1 |        -56 |       -231 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/memmap.h           | C++          |        -23 |          0 |         -7 |        -30 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/paging.c           | C            |       -244 |        -39 |        -83 |       -366 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/paging.h           | C++          |        -22 |         -8 |         -9 |        -39 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/pmm.c              | C            |       -121 |          0 |        -32 |       -153 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/pmm.h              | C++          |        -13 |          0 |         -6 |        -19 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/power.c            | C            |        -39 |         -1 |        -12 |        -52 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/power.h            | C++          |         -5 |          0 |         -2 |         -7 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/process.c          | C            |       -610 |        -58 |       -197 |       -865 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/process.h          | C++          |        -72 |          0 |        -29 |       -101 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/shell.c            | C            |       -618 |         -4 |       -135 |       -757 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/shell.h            | C++          |        -10 |          0 |         -2 |        -12 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/syscall.c          | C            |        -83 |          0 |        -27 |       -110 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/syscall.h          | C++          |        -18 |          0 |         -4 |        -22 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/syscall_stub.asm   | ARM          |        -61 |          0 |        -14 |        -75 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/terminal.h         | C++          |        -22 |          0 |         -6 |        -28 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/timer.c            | C            |        -47 |          0 |        -13 |        -60 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/timer.h            | C++          |        -10 |          0 |         -3 |        -13 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/usercopy.c         | C            |        -90 |          0 |        -31 |       -121 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/usercopy.h         | C++          |         -7 |          0 |         -3 |        -10 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/usermode.asm       | ARM          |        -33 |          0 |        -10 |        -43 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/kernel/usermode.h         | C++          |         -5 |          0 |         -3 |         -8 |
+| //wsl.localhost/Ubuntu/home/naqqydev/myos/tools/make_naq.py         | Python       |        -30 |         -4 |         -9 |        -43 |
+| /home/naqqydev/myos/apps/2dgame.c                                   | C            |        191 |          0 |         51 |        242 |
+| /home/naqqydev/myos/apps/badptr.c                                   | C            |          6 |          0 |          3 |          9 |
+| /home/naqqydev/myos/apps/demo.c                                     | C            |          6 |          0 |          1 |          7 |
+| /home/naqqydev/myos/apps/fstest.c                                   | C            |         25 |          0 |          7 |         32 |
+| /home/naqqydev/myos/apps/keytest.c                                  | C            |         17 |          0 |          6 |         23 |
+| /home/naqqydev/myos/apps/spin.c                                     | C            |          8 |          0 |          3 |         11 |
+| /home/naqqydev/myos/apps/syscall.h                                  | C++          |        139 |         43 |         42 |        224 |
+| /home/naqqydev/myos/apps/sysinfo.c                                  | C            |         29 |          0 |          6 |         35 |
+| /home/naqqydev/myos/apps/systest.c                                  | C            |          6 |          0 |          2 |          8 |
+| /home/naqqydev/myos/apps/uhello.c                                   | C            |         10 |          0 |          2 |         12 |
+| /home/naqqydev/myos/apps/wolf3d.c                                   | C            |        262 |         32 |         70 |        364 |
+| /home/naqqydev/myos/apps/yt.c                                       | C            |          8 |          0 |          2 |         10 |
+| /home/naqqydev/myos/build.sh                                        | Shell Script |      1,038 |         25 |        213 |      1,276 |
+| /home/naqqydev/myos/filesforlater/com.c                             | C            |        167 |          0 |         25 |        192 |
+| /home/naqqydev/myos/graphics/font8x8.c                              | C            |        108 |          0 |         11 |        119 |
+| /home/naqqydev/myos/graphics/font8x8.h                              | C++          |          5 |          0 |          3 |          8 |
+| /home/naqqydev/myos/graphics/framebuffer.c                          | C            |        278 |          0 |         89 |        367 |
+| /home/naqqydev/myos/graphics/framebuffer.h                          | C++          |         33 |          0 |         10 |         43 |
+| /home/naqqydev/myos/graphics/image.c                                | C            |        101 |          0 |         36 |        137 |
+| /home/naqqydev/myos/graphics/image.h                                | C++          |         16 |          0 |          5 |         21 |
+| /home/naqqydev/myos/include/naq_boot_info.h                         | C++          |         50 |          4 |         15 |         69 |
+| /home/naqqydev/myos/kernel/exec.c                                   | C            |        319 |          0 |         79 |        398 |
+| /home/naqqydev/myos/kernel/exec.h                                   | C++          |         22 |          0 |         11 |         33 |
+| /home/naqqydev/myos/kernel/fat32.c                                  | C            |      1,586 |         27 |        459 |      2,072 |
+| /home/naqqydev/myos/kernel/fat32.h                                  | C++          |         16 |          0 |          7 |         23 |
+| /home/naqqydev/myos/kernel/gdt.c                                    | C            |         92 |         32 |         23 |        147 |
+| /home/naqqydev/myos/kernel/gdt.h                                    | C++          |         13 |          0 |          4 |         17 |
+| /home/naqqydev/myos/kernel/kernel.c                                 | C            |      1,136 |         49 |        353 |      1,538 |
+| /home/naqqydev/myos/kernel/kmem.c                                   | C            |        211 |         12 |         56 |        279 |
+| /home/naqqydev/myos/kernel/kmem.h                                   | C++          |          9 |          0 |          4 |         13 |
+| /home/naqqydev/myos/kernel/memmap.c                                 | C            |        211 |          1 |         69 |        281 |
+| /home/naqqydev/myos/kernel/memmap.h                                 | C++          |         23 |          0 |          7 |         30 |
+| /home/naqqydev/myos/kernel/paging.c                                 | C            |        285 |         35 |         97 |        417 |
+| /home/naqqydev/myos/kernel/paging.h                                 | C++          |         22 |          8 |          9 |         39 |
+| /home/naqqydev/myos/kernel/pmm.c                                    | C            |        158 |          0 |         47 |        205 |
+| /home/naqqydev/myos/kernel/pmm.h                                    | C++          |         14 |          0 |          7 |         21 |
+| /home/naqqydev/myos/kernel/power.c                                  | C            |         39 |          1 |         12 |         52 |
+| /home/naqqydev/myos/kernel/power.h                                  | C++          |          5 |          0 |          2 |          7 |
+| /home/naqqydev/myos/kernel/process.c                                | C            |        610 |         58 |        197 |        865 |
+| /home/naqqydev/myos/kernel/process.h                                | C++          |         72 |          0 |         29 |        101 |
+| /home/naqqydev/myos/kernel/shell.c                                  | C            |        657 |         12 |        140 |        809 |
+| /home/naqqydev/myos/kernel/shell.h                                  | C++          |         10 |          0 |          2 |         12 |
+| /home/naqqydev/myos/kernel/syscall.c                                | C            |        145 |          0 |         52 |        197 |
+| /home/naqqydev/myos/kernel/syscall.h                                | C++          |         22 |          0 |          5 |         27 |
+| /home/naqqydev/myos/kernel/terminal.h                               | C++          |         22 |          0 |          6 |         28 |
+| /home/naqqydev/myos/kernel/timer.c                                  | C            |         47 |          0 |         13 |         60 |
+| /home/naqqydev/myos/kernel/timer.h                                  | C++          |         10 |          0 |          3 |         13 |
+| /home/naqqydev/myos/kernel/usercopy.c                               | C            |        117 |          0 |         41 |        158 |
+| /home/naqqydev/myos/kernel/usercopy.h                               | C++          |          8 |          0 |          3 |         11 |
+| /home/naqqydev/myos/kernel/usermode.h                               | C++          |          5 |          0 |          3 |          8 |
+| /home/naqqydev/myos/kernel64/arch/x86_64/gdt64.c                    | C            |        112 |          3 |         33 |        148 |
+| /home/naqqydev/myos/kernel64/arch/x86_64/gdt64.h                    | C++          |         12 |          0 |          5 |         17 |
+| /home/naqqydev/myos/kernel64/arch/x86_64/idt64.c                    | C            |        164 |          0 |         43 |        207 |
+| /home/naqqydev/myos/kernel64/arch/x86_64/idt64.h                    | C++          |         50 |          0 |         12 |         62 |
+| /home/naqqydev/myos/kernel64/arch/x86_64/io64.h                     | C++          |         18 |          0 |          6 |         24 |
+| /home/naqqydev/myos/kernel64/arch/x86_64/irq64.c                    | C            |        133 |          7 |         38 |        178 |
+| /home/naqqydev/myos/kernel64/arch/x86_64/irq64.h                    | C++          |          7 |          0 |          3 |         10 |
+| /home/naqqydev/myos/kernel64/arch/x86_64/power64.c                  | C            |         24 |          6 |          8 |         38 |
+| /home/naqqydev/myos/kernel64/arch/x86_64/power64.h                  | C++          |          5 |          0 |          2 |          7 |
+| /home/naqqydev/myos/kernel64/arch/x86_64/timer64.c                  | C            |         52 |          6 |         19 |         77 |
+| /home/naqqydev/myos/kernel64/arch/x86_64/timer64.h                  | C++          |         10 |          0 |          5 |         15 |
+| /home/naqqydev/myos/kernel64/console/fb_console.c                   | C            |        204 |         13 |         59 |        276 |
+| /home/naqqydev/myos/kernel64/input/kinput64.c                       | C            |         60 |          3 |         21 |         84 |
+| /home/naqqydev/myos/kernel64/input/kinput64.h                       | C++          |          8 |          0 |          4 |         12 |
+| /home/naqqydev/myos/kernel64/k64_console.h                          | C++          |         11 |          0 |          5 |         16 |
+| /home/naqqydev/myos/kernel64/main.c                                 | C            |         90 |          5 |         35 |        130 |
+| /home/naqqydev/myos/kernel64/mm/kmem64.c                            | C            |        195 |          4 |         68 |        267 |
+| /home/naqqydev/myos/kernel64/mm/kmem64.h                            | C++          |         11 |          0 |          5 |         16 |
+| /home/naqqydev/myos/kernel64/mm/memmap64.c                          | C            |        208 |          9 |         43 |        260 |
+| /home/naqqydev/myos/kernel64/mm/memmap64.h                          | C++          |         24 |          0 |          9 |         33 |
+| /home/naqqydev/myos/kernel64/mm/paging64.c                          | C            |        223 |         31 |         78 |        332 |
+| /home/naqqydev/myos/kernel64/mm/paging64.h                          | C++          |         16 |          0 |          8 |         24 |
+| /home/naqqydev/myos/kernel64/mm/pmm64.c                             | C            |        349 |         35 |        120 |        504 |
+| /home/naqqydev/myos/kernel64/mm/pmm64.h                             | C++          |         21 |          5 |         10 |         36 |
+| /home/naqqydev/myos/kernel64/shell/shell64.c                        | C            |        178 |          0 |         44 |        222 |
+| /home/naqqydev/myos/kernel64/shell/shell64.h                        | C++          |          6 |          0 |          2 |          8 |
+| /home/naqqydev/myos/tools/make_naq.py                               | Python       |         30 |          4 |          9 |         43 |
+| /home/naqqydev/myos/tools/make_nimg.py                              | Python       |         34 |          2 |         14 |         50 |
+| /home/naqqydev/myos/uefi/bootx64.c                                  | C            |        444 |         45 |        124 |        613 |
+| Total                                                               |              |      4,646 |        220 |      1,386 |      6,252 |
++---------------------------------------------------------------------+--------------+------------+------------+------------+------------+

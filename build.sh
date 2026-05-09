@@ -185,6 +185,15 @@ KERNEL64_TIMER_OBJ="$BUILD_DIR/timer64.o"
 KERNEL64_SHELL_C="$KERNEL64_DIR/shell/shell64.c"
 KERNEL64_SHELL_OBJ="$BUILD_DIR/shell64.o"
 
+KERNEL64_BLOCK_C="$KERNEL64_DIR/storage/block64.c"
+KERNEL64_BLOCK_OBJ="$BUILD_DIR/block64.o"
+
+KERNEL64_FAT32_C="$KERNEL64_DIR/fs/fat32_64.c"
+KERNEL64_FAT32_OBJ="$BUILD_DIR/fat32_64.o"
+
+KERNEL64_VFS_C="$KERNEL64_DIR/fs/vfs64.c"
+KERNEL64_VFS_OBJ="$BUILD_DIR/vfs64.o"
+
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 VBOX_VM_NAME="${VBOX_VM_NAME:-NAQ OS}"
 VBOX_VDI="$BUILD_DIR/naqos.vdi"
@@ -658,6 +667,54 @@ build_kernel64() {
     -c "$KERNEL64_SHELL_C" \
     -o "$KERNEL64_SHELL_OBJ"
 
+  msg "Compiling 64-bit block storage"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_BLOCK_C" \
+    -o "$KERNEL64_BLOCK_OBJ"
+
+  msg "Compiling 64-bit FAT32 read-only filesystem"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_FAT32_C" \
+    -o "$KERNEL64_FAT32_OBJ"
+
+  msg "Compiling 64-bit VFS"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_VFS_C" \
+    -o "$KERNEL64_VFS_OBJ"
+
   msg "Linking 64-bit kernel ELF"
   "$LD" \
     -m elf_x86_64 \
@@ -679,7 +736,10 @@ build_kernel64() {
     "$KERNEL64_INPUT_OBJ" \
     "$KERNEL64_POWER_OBJ" \
     "$KERNEL64_TIMER_OBJ" \
-    "$KERNEL64_SHELL_OBJ"
+    "$KERNEL64_SHELL_OBJ" \
+    "$KERNEL64_BLOCK_OBJ" \
+    "$KERNEL64_FAT32_OBJ" \
+    "$KERNEL64_VFS_OBJ"
 
   msg "Converting 64-bit kernel ELF to flat binary"
   "$OBJCOPY" -O binary "$KERNEL64_ELF" "$KERNEL64_BIN"
@@ -821,6 +881,28 @@ build_disk_image() {
   dd if="$FS_IMG" of="$OS_IMG" conv=notrunc bs=512 seek="$FS_START_LBA" status=none
 }
 
+add_uefi_test_files() {
+  msg "Adding UEFI test files"
+
+  local docs_dir="$BUILD_DIR/test_docs"
+  local readme_file="$docs_dir/readme.txt"
+
+  mkdir -p "$docs_dir"
+
+  cat > "$readme_file" <<'EOF'
+Hello from NAQ OS kernel64!
+
+If you can read this with:
+
+  cat /docs/readme.txt
+
+then block64 + FAT32 read-only + shell filesystem commands are working.
+EOF
+
+  "$MMD" -i "$UEFI_IMG" ::/docs 2>/dev/null || true
+  "$MCOPY" -o -i "$UEFI_IMG" "$readme_file" ::/docs/readme.txt
+}
+
 build_uefi() {
   msg "Building UEFI BOOTX64.EFI"
 
@@ -911,6 +993,8 @@ build_uefi_image() {
 
   "$MCOPY" -i "$UEFI_IMG" "$UEFI_EFI" ::/EFI/BOOT/BOOTX64.EFI
 
+  add_uefi_test_files
+
   if [[ -f "$KERNEL64_BIN" ]]; then
     msg "Copying KERNEL64.BIN into UEFI image"
     "$MCOPY" -i "$UEFI_IMG" "$KERNEL64_BIN" ::KERNEL64.BIN
@@ -998,7 +1082,7 @@ run_qemu_uefi() {
   echo "UEFI_IMG : $UEFI_IMG"
 
   "$QEMU64" \
-    -machine q35 \
+    -machine pc \
     -m 256M \
     -cpu qemu64 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \

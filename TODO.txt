@@ -1,0 +1,91 @@
+Clean up/finalize shell64 command set. // DONE
+
+Add block64 storage layer. // DONE
+
+Port FAT32 read-only on top of block64. // DONE
+
+Add shell filesystem commands: // DONE
+ls
+ls <path>
+cat <file>
+
+Add tiny VFS64 wrapper over FAT32. // DONE
+vfs64_list_dir()
+vfs64_read_file()
+vfs64_mount_root()
+
+VFS LFN refinement / path normalization. // DONE
+
+Split framebuffer drawing into reusable framebuffer64. // TODO
+
+Add proper scrolling to the framebuffer console. // TODO
+
+Port image64 / NIMG splash support. // TODO
+
+Add build-time PNG → NIMG conversion tool. // TODO
+
+Add /boot/splash.ni to the UEFI image. // TODO
+
+Add splash command or boot splash display. // TODO
+
+Port terminal sessions/history. // TODO
+
+Add FAT32 write support: // TODO
+mkdir
+rm
+rmdir
+write file
+
+Add shell write commands: // TODO
+mkdir <path>
+rm <path>
+rmdir <path>
+
+Add context_switch64.asm. // TODO
+
+Add kernel-only process64 task system. // TODO
+
+Add cooperative kernel-task scheduler. // TODO
+
+Add timer preemption for kernel tasks. // TODO
+
+Add shell process commands: // TODO
+ps
+sched
+schedstat
+preempton
+preemptoff
+
+Add user-mode entry path with iretq. // TODO
+
+Add syscall64 ABI. // TODO
+
+Add usercopy64. // TODO
+
+Add ELF64 app loader. // TODO
+
+Update app build system for 64-bit ELF apps. // TODO
+
+Add shell app commands: // TODO
+run <file>
+spawn <file>
+kill <pid>
+
+Add process terminal support: // TODO
+fg <pid>
+view <pid>
+private app terminals
+
+Replace temporary early identity heap/paging assumptions with cleaner virtual memory layout. // TODO
+
+Reclaim UEFI BootServices memory safely after own page tables are active. // TODO
+
+Improve page-table allocation to use PMM-backed pages after mappings are stable. // TODO
+
+Add proper double-fault/page-fault IST testing. // TODO
+
+Later: add AHCI/SATA backend under block64. // TODO
+
+Later: add USB mass storage backend under block64. // TODO
+
+Later: add ext4 read-only behind the same VFS/block layer. // TODO

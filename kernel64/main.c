@@ -15,6 +15,10 @@
 
 #include "shell/shell64.h"
 
+#include "storage/block64.h"
+
+#include "fs/vfs64.h"
+
 static void halt_forever(void) {
     for (;;) {
         __asm__ volatile ("hlt");
@@ -118,6 +122,24 @@ void kmain64(naq_boot_info_t* boot) {
     k64_print(" Hz\n");
 
     k64_print("Interrupts enabled.\n");
+
+    if (block64_init()) {
+        k64_print("Block64 initialized.\n");
+    } else {
+        k64_print("Block64: no legacy ATA disk detected.\n");
+    }
+
+    /*
+     * UEFI image is currently a raw FAT32 filesystem image,
+     * so FAT32 starts at disk LBA 0.
+     */
+    if (vfs64_mount_root()) {
+        vfs64_print_summary();
+    } else {
+        k64_print("VFS64 mount failed.\n");
+    }
+
+    k64_print("\n");
 
     shell64_init();
 
