@@ -1,0 +1,12 @@
+"filename", "language", "Shell Script", "C", "C++", "comment", "blank", "total"
+"/home/naqqydev/myos/build.sh", "Shell Script", 69, 0, 0, 0, 15, 84
+"/home/naqqydev/myos/kernel64/arch/x86_64/io64.h", "C++", 0, 0, 5, 0, 1, 6
+"/home/naqqydev/myos/kernel64/fs/fat32_64.c", "C", 0, 616, 0, 0, 172, 788
+"/home/naqqydev/myos/kernel64/fs/fat32_64.h", "C++", 0, 0, 14, 0, 5, 19
+"/home/naqqydev/myos/kernel64/fs/vfs64.c", "C", 0, 210, 0, 13, 65, 288
+"/home/naqqydev/myos/kernel64/fs/vfs64.h", "C++", 0, 0, 16, 0, 7, 23
+"/home/naqqydev/myos/kernel64/main.c", "C", 0, 13, 0, 4, 5, 22
+"/home/naqqydev/myos/kernel64/shell/shell64.c", "C", 0, 214, 0, 3, 47, 264
+"/home/naqqydev/myos/kernel64/storage/block64.c", "C", 0, 191, 0, 21, 64, 276
+"/home/naqqydev/myos/kernel64/storage/block64.h", "C++", 0, 0, 11, 0, 7, 18
+"Total", "-", 69, 1244, 46, 41, 388, 1788

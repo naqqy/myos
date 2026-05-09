@@ -194,9 +194,19 @@ KERNEL64_FAT32_OBJ="$BUILD_DIR/fat32_64.o"
 KERNEL64_VFS_C="$KERNEL64_DIR/fs/vfs64.c"
 KERNEL64_VFS_OBJ="$BUILD_DIR/vfs64.o"
 
+KERNEL64_FB64_C="$KERNEL64_DIR/graphics/framebuffer64.c"
+KERNEL64_FB64_OBJ="$BUILD_DIR/framebuffer64.o"
+
+KERNEL64_IMAGE_C="$KERNEL64_DIR/graphics/image64.c"
+KERNEL64_IMAGE_OBJ="$BUILD_DIR/image64.o"
+
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 VBOX_VM_NAME="${VBOX_VM_NAME:-NAQ OS}"
 VBOX_VDI="$BUILD_DIR/naqos.vdi"
+
+ASSETS_FS_DIR="${ASSETS_FS_DIR:-assets/fs}"
+ASSETS_BUILD_DIR="$BUILD_DIR/assets_fs"
+NIMG_TOOL="${NIMG_TOOL:-tools/make_nimg.py}"
 
 # Disk layout
 STAGE2_SECTORS=64
@@ -205,6 +215,9 @@ FS_START_LBA=65
 # Image sizes
 FS_IMG_MB=64
 OS_IMG_MB=68
+
+SPLASH_NIMG_WIDTH="${SPLASH_NIMG_WIDTH:-512}"
+SPLASH_NIMG_HEIGHT="${SPLASH_NIMG_HEIGHT:-384}"
 
 # Tools
 NASM="${NASM:-nasm}"
@@ -331,6 +344,90 @@ build_bootloader() {
     echo "Error: stage2.bin size mismatch, expected $stage2_target_size got $stage2_size" >&2
     exit 1
   fi
+}
+
+mtools_mkdir_p() {
+  local img="$1"
+  local path="$2"
+
+  path="${path#/}"
+  path="${path%/}"
+
+  if [[ -z "$path" || "$path" == "." ]]; then
+    return 0
+  fi
+
+  local current=""
+  IFS='/' read -r -a parts <<< "$path"
+
+  for part in "${parts[@]}"; do
+    [[ -z "$part" ]] && continue
+
+    current="$current/$part"
+    "$MMD" -i "$img" "::$current" 2>/dev/null || true
+  done
+}
+
+copy_asset_to_uefi_img() {
+  local src="$1"
+  local rel="$2"
+
+  local dest_dir
+  local dest_path
+
+  dest_dir="$(dirname "$rel")"
+  dest_path="/$rel"
+
+  if [[ "$dest_dir" != "." ]]; then
+    mtools_mkdir_p "$UEFI_IMG" "$dest_dir"
+  fi
+
+  "$MCOPY" -o -i "$UEFI_IMG" "$src" "::$dest_path"
+}
+
+add_uefi_assets() {
+  msg "Adding assets to UEFI filesystem"
+
+  if [[ ! -d "$ASSETS_FS_DIR" ]]; then
+    echo "No assets directory found at $ASSETS_FS_DIR; skipping assets."
+    return 0
+  fi
+
+  if [[ ! -f "$NIMG_TOOL" ]]; then
+    echo "Warning: $NIMG_TOOL not found; PNG assets cannot be converted." >&2
+  fi
+
+  mkdir -p "$ASSETS_BUILD_DIR"
+
+  while IFS= read -r -d '' src; do
+    local rel="${src#$ASSETS_FS_DIR/}"
+    local ext="${rel##*.}"
+    local lower_ext
+    lower_ext="$(printf '%s' "$ext" | tr 'A-Z' 'a-z')"
+
+    if [[ "$lower_ext" == "png" ]]; then
+      if [[ ! -f "$NIMG_TOOL" ]]; then
+        echo "Skipping PNG asset because converter is missing: $rel" >&2
+        continue
+      fi
+
+      local rel_no_ext="${rel%.*}"
+      local converted="$ASSETS_BUILD_DIR/$rel_no_ext.ni"
+      local converted_rel="$rel_no_ext.ni"
+
+      mkdir -p "$(dirname "$converted")"
+
+      if [[ "$rel" == "boot/splash.png" ]]; then
+        "$PYTHON3" "$NIMG_TOOL" "$src" "$converted" "$SPLASH_NIMG_WIDTH" "$SPLASH_NIMG_HEIGHT"
+      else
+        "$PYTHON3" "$NIMG_TOOL" "$src" "$converted"
+      fi
+
+      copy_asset_to_uefi_img "$converted" "$converted_rel"
+    else
+      copy_asset_to_uefi_img "$src" "$rel"
+    fi
+  done < <(find "$ASSETS_FS_DIR" -type f -print0)
 }
 
 build_kernel() {
@@ -715,6 +812,38 @@ build_kernel64() {
     -c "$KERNEL64_VFS_C" \
     -o "$KERNEL64_VFS_OBJ"
 
+  msg "Compiling 64-bit framebuffer graphics"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_FB64_C" \
+    -o "$KERNEL64_FB64_OBJ"
+
+  msg "Compiling 64-bit image/NIMG loader"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_IMAGE_C" \
+    -o "$KERNEL64_IMAGE_OBJ"
+
   msg "Linking 64-bit kernel ELF"
   "$LD" \
     -m elf_x86_64 \
@@ -739,7 +868,9 @@ build_kernel64() {
     "$KERNEL64_SHELL_OBJ" \
     "$KERNEL64_BLOCK_OBJ" \
     "$KERNEL64_FAT32_OBJ" \
-    "$KERNEL64_VFS_OBJ"
+    "$KERNEL64_VFS_OBJ" \
+    "$KERNEL64_FB64_OBJ" \
+    "$KERNEL64_IMAGE_OBJ"
 
   msg "Converting 64-bit kernel ELF to flat binary"
   "$OBJCOPY" -O binary "$KERNEL64_ELF" "$KERNEL64_BIN"
@@ -994,6 +1125,7 @@ build_uefi_image() {
   "$MCOPY" -i "$UEFI_IMG" "$UEFI_EFI" ::/EFI/BOOT/BOOTX64.EFI
 
   add_uefi_test_files
+  add_uefi_assets
 
   if [[ -f "$KERNEL64_BIN" ]]; then
     msg "Copying KERNEL64.BIN into UEFI image"

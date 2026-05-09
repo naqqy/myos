@@ -1,88 +1,94 @@
-Clean up/finalize shell64 command set. // DONE
+1 Clean up/finalize shell64 command set. // DONE
 
-Add block64 storage layer. // DONE
+2 Add block64 storage layer. // DONE
 
-Port FAT32 read-only on top of block64. // DONE
+3 Port FAT32 read-only on top of block64. // DONE
 
-Add shell filesystem commands: // DONE
+4 Add shell filesystem commands: // DONE
 ls
 ls <path>
 cat <file>
 
-Add tiny VFS64 wrapper over FAT32. // DONE
+5 Add tiny VFS64 wrapper over FAT32. // DONE
 vfs64_list_dir()
 vfs64_read_file()
 vfs64_mount_root()
 
-VFS LFN refinement / path normalization. // DONE
+6 VFS LFN refinement / path normalization. // DONE
 
-Split framebuffer drawing into reusable framebuffer64. // TODO
+7 Split framebuffer drawing into reusable framebuffer64. // DONE
 
-Add proper scrolling to the framebuffer console. // TODO
+8 Add proper scrolling to the framebuffer console. // DONE
 
-Port image64 / NIMG splash support. // TODO
+9 Port image64 / NIMG splash support. // DONE
 
-Add build-time PNG → NIMG conversion tool. // TODO
+10 Add build-time PNG → NIMG conversion tool. // DONE
 
-Add /boot/splash.ni to the UEFI image. // TODO
+11 Add /boot/splash.ni to the UEFI image. // DONE
 
-Add splash command or boot splash display. // TODO
+12 Add splash command or boot splash display. // DONE
 
-Port terminal sessions/history. // TODO
+13 Port terminal sessions/history. // TODO
 
-Add FAT32 write support: // TODO
+14 Add FAT32 write support: // TODO
 mkdir
 rm
 rmdir
 write file
 
-Add shell write commands: // TODO
+15 Add shell write commands: // TODO
 mkdir <path>
 rm <path>
 rmdir <path>
 
-Add context_switch64.asm. // TODO
+16 Add context_switch64.asm. // TODO
 
-Add kernel-only process64 task system. // TODO
+17 Add kernel-only process64 task system. // TODO
 
-Add cooperative kernel-task scheduler. // TODO
+18 Add cooperative kernel-task scheduler. // TODO
 
-Add timer preemption for kernel tasks. // TODO
+19 Add timer preemption for kernel tasks. // TODO
 
-Add shell process commands: // TODO
+20 Add shell process commands: // TODO
 ps
 sched
 schedstat
 preempton
 preemptoff
 
-Add user-mode entry path with iretq. // TODO
+21 Add user-mode entry path with iretq. // TODO
 
-Add syscall64 ABI. // TODO
+22 Add syscall64 ABI. // TODO
 
-Add usercopy64. // TODO
+23 Add usercopy64. // TODO
 
-Add ELF64 app loader. // TODO
+24 Add ELF64 app loader. // TODO
 
-Update app build system for 64-bit ELF apps. // TODO
+25 Update app build system for 64-bit ELF apps. // TODO
 
-Add shell app commands: // TODO
+26 Add shell app commands: // TODO
 run <file>
 spawn <file>
 kill <pid>
 
-Add process terminal support: // TODO
+27 Add process terminal support: // TODO
 fg <pid>
 view <pid>
 private app terminals
 
-Replace temporary early identity heap/paging assumptions with cleaner virtual memory layout. // TODO
+28 Replace temporary early identity heap/paging assumptions with cleaner virtual memory layout. // TODO
 
-Reclaim UEFI BootServices memory safely after own page tables are active. // TODO
+29 Reclaim UEFI BootServices memory safely after own page tables are active. // TODO
 
-Improve page-table allocation to use PMM-backed pages after mappings are stable. // TODO
+30 Improve page-table allocation to use PMM-backed pages after mappings are stable. // TODO
 
-Add proper double-fault/page-fault IST testing. // TODO
+31 Add proper double-fault/page-fault IST testing. // TODO
+
+32 Improve image64 to allocate large image buffers dynamically. // TODO
+
+33 Add automatic boot splash before shell starts. // TODO
+
+34 Add aspect-ratio preserving PNG conversion. // TODO
 
 Later: add AHCI/SATA backend under block64. // TODO
 

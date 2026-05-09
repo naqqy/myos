@@ -15,9 +15,16 @@
 
 #include "../fs/vfs64.h"
 
+#include "../graphics/framebuffer64.h"
+#include "../graphics/image64.h"
+
+#include "../console/terminal64.h"
+
 #define SHELL64_INPUT_MAX 128
 #define SHELL64_FILE_BUFFER_SIZE 65536u
+#define SHELL64_IMAGE_BUFFER_SIZE (1024u * 1024u)
 
+static nq_u8 g_image_buffer[SHELL64_IMAGE_BUFFER_SIZE];
 static nq_u8 g_file_buffer[SHELL64_FILE_BUFFER_SIZE];
 
 static char g_input[SHELL64_INPUT_MAX];
@@ -90,6 +97,10 @@ static void shell64_print_help(void) {
     k64_print("  blockdump <n> - dump first 128 bytes of sector n\n");
     k64_print("  fs            - show filesystem info\n");
     k64_print("  norm <path>   - show normalized VFS path\n");
+    k64_print("  fb            - show framebuffer info\n");
+    k64_print("  nimg <file>   - draw centered NIMG image\n");
+    k64_print("  splash        - draw /boot/splash.ni if present\n");
+    k64_print("  term          - show terminal/session info\n");
     k64_print("  reboot        - reboot machine\n");
     k64_print("  shutdown      - power off emulator\n");
 }
@@ -105,6 +116,29 @@ static void shell64_norm_path(const char* path) {
     }
 
     k64_print(normalized);
+    k64_print("\n");
+}
+
+static void shell64_draw_nimg(const char* path) {
+    path = skip_spaces(path);
+
+    if (!path || !path[0]) {
+        k64_print("Usage: nimg <file>\n");
+        return;
+    }
+
+    if (!image64_draw_nimg_file_centered(
+            path,
+            g_image_buffer,
+            SHELL64_IMAGE_BUFFER_SIZE)) {
+        k64_print("nimg: image load/draw failed.\n");
+        return;
+    }
+
+    /*
+     * Image drawing overwrites the framebuffer directly.
+     * Put the prompt area back into a clean state afterwards.
+     */
     k64_print("\n");
 }
 
@@ -379,6 +413,18 @@ static void shell64_execute_command(void) {
     }
     else if (str_starts_with(arg, "norm ")) {
         shell64_norm_path(arg + 5);
+    }
+    else if (str_eq(arg, "fb")) {
+        fb64_print_summary();
+    }
+    else if (str_starts_with(arg, "nimg ")) {
+        shell64_draw_nimg(arg + 5);
+    }
+    else if (str_eq(arg, "splash")) {
+        shell64_draw_nimg("/boot/splash.ni");
+    }
+    else if (str_eq(arg, "term")) {
+        terminal64_print_summary();
     }
     else if (str_eq(arg, "reboot")) {
         k64_print("Rebooting...\n");

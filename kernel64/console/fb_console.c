@@ -1,113 +1,144 @@
 #include "../k64_console.h"
+#include "terminal64.h"
+
+#include "../graphics/framebuffer64.h"
 #include "font8x8.h"
-#include "naq_boot_info.h"
 
 #define K64_CELL_W 8u
 #define K64_CELL_H 16u
 
-static naq_boot_info_t* g_boot = 0;
+#define K64_CONTENT_START_ROW 3u
+
+#define TERM64_ATTR_DEFAULT 0x07u
+
+struct terminal64_session {
+    nq_u16 buffer[TERM64_HISTORY_ROWS][TERM64_MAX_COLS];
+
+    nq_u32 cursor_row;
+    nq_u32 cursor_col;
+    nq_u32 view_top;
+
+    nq_u32 used;
+    nq_u32 id;
+};
+
+static terminal64_session_t g_terminals[TERM64_MAX_SESSIONS];
+static terminal64_session_t* g_kernel_terminal = 0;
+static terminal64_session_t* g_active_terminal = 0;
 
 static nq_u32 g_cols = 0;
 static nq_u32 g_rows = 0;
-static nq_u32 g_cursor_col = 0;
-static nq_u32 g_cursor_row = 0;
+static nq_u32 g_visible_rows = 0;
 
-static nq_u32 k64_make_pixel(nq_u8 r, nq_u8 g, nq_u8 b) {
-    if (!g_boot) {
-        return 0;
-    }
+static void k64_draw_header(void);
+static void k64_render_text_area(void);
 
-    /*
-     * UEFI GOP:
-     * 0 = RGBx
-     * 1 = BGRx
-     */
-    if (g_boot->framebuffer_pixel_format == 0) {
-        return ((nq_u32)r) |
-               ((nq_u32)g << 8) |
-               ((nq_u32)b << 16);
-    }
-
-    return ((nq_u32)b) |
-           ((nq_u32)g << 8) |
-           ((nq_u32)r << 16);
+static nq_u32 k64_bg_color(void) {
+    return fb64_make_color(0, 0, 0);
 }
 
-static void k64_put_pixel(nq_u32 x, nq_u32 y, nq_u32 color) {
-    if (!g_boot ||
-        g_boot->magic != NAQ_BOOT_INFO_MAGIC ||
-        g_boot->version != NAQ_BOOT_INFO_VERSION) {
-        return;
-    }
-
-    if (x >= g_boot->framebuffer_width ||
-        y >= g_boot->framebuffer_height) {
-        return;
-    }
-
-    volatile nq_u32* fb = (volatile nq_u32*)g_boot->framebuffer_base;
-
-    nq_u64 index =
-        ((nq_u64)y * g_boot->framebuffer_pixels_per_scanline) + x;
-
-    fb[index] = color;
+static nq_u32 k64_fg_color(void) {
+    return fb64_make_color(234, 234, 234);
 }
 
-static void k64_fill_rect(
-    nq_u32 x,
-    nq_u32 y,
-    nq_u32 w,
-    nq_u32 h,
-    nq_u32 color
-) {
-    if (!g_boot) {
+static nq_u16 term64_make_cell(char c) {
+    return (nq_u16)(((nq_u16)TERM64_ATTR_DEFAULT << 8) | (nq_u8)c);
+}
+
+static char term64_cell_char(nq_u16 cell) {
+    char c = (char)(cell & 0xFFu);
+
+    if (c == 0) {
+        return ' ';
+    }
+
+    return c;
+}
+
+static void mem_zero(void* ptr, nq_u64 size) {
+    nq_u8* p = (nq_u8*)ptr;
+
+    for (nq_u64 i = 0; i < size; i++) {
+        p[i] = 0;
+    }
+}
+
+static void terminal64_clear_session(terminal64_session_t* t) {
+    if (!t) {
         return;
     }
 
-    if (x >= g_boot->framebuffer_width ||
-        y >= g_boot->framebuffer_height) {
-        return;
-    }
-
-    if (w > g_boot->framebuffer_width - x) {
-        w = g_boot->framebuffer_width - x;
-    }
-
-    if (h > g_boot->framebuffer_height - y) {
-        h = g_boot->framebuffer_height - y;
-    }
-
-    for (nq_u32 yy = 0; yy < h; yy++) {
-        for (nq_u32 xx = 0; xx < w; xx++) {
-            k64_put_pixel(x + xx, y + yy, color);
+    for (nq_u32 row = 0; row < TERM64_HISTORY_ROWS; row++) {
+        for (nq_u32 col = 0; col < TERM64_MAX_COLS; col++) {
+            t->buffer[row][col] = term64_make_cell(' ');
         }
     }
+
+    t->cursor_row = 0;
+    t->cursor_col = 0;
+    t->view_top = 0;
 }
 
-void k64_clear_screen(void) {
-    nq_u32 bg = k64_make_pixel(0, 0, 0);
+static void terminal64_shift_history_up(terminal64_session_t* t) {
+    if (!t) {
+        return;
+    }
 
-    k64_fill_rect(
-        0,
-        0,
-        g_boot->framebuffer_width,
-        g_boot->framebuffer_height,
-        bg
-    );
+    for (nq_u32 row = 1; row < TERM64_HISTORY_ROWS; row++) {
+        for (nq_u32 col = 0; col < TERM64_MAX_COLS; col++) {
+            t->buffer[row - 1][col] = t->buffer[row][col];
+        }
+    }
 
-    g_cursor_col = 0;
-    g_cursor_row = 0;
+    for (nq_u32 col = 0; col < TERM64_MAX_COLS; col++) {
+        t->buffer[TERM64_HISTORY_ROWS - 1][col] = term64_make_cell(' ');
+    }
+
+    if (t->cursor_row > 0) {
+        t->cursor_row--;
+    }
+
+    if (t->view_top > 0) {
+        t->view_top--;
+    }
 }
 
-static void k64_draw_char_at(nq_u32 col, nq_u32 row, char c) {
+static void terminal64_ensure_cursor_visible(terminal64_session_t* t) {
+    if (!t) {
+        return;
+    }
+
+    if (g_visible_rows == 0) {
+        t->view_top = 0;
+        return;
+    }
+
+    if (t->cursor_row < t->view_top) {
+        t->view_top = t->cursor_row;
+    }
+
+    if (t->cursor_row >= t->view_top + g_visible_rows) {
+        t->view_top = t->cursor_row - g_visible_rows + 1u;
+    }
+
+    if (t->view_top >= TERM64_HISTORY_ROWS) {
+        t->view_top = TERM64_HISTORY_ROWS - 1;
+    }
+}
+
+static void k64_draw_char_at(nq_u32 col, nq_u32 screen_row, char c) {
     const unsigned char* glyph;
     nq_u32 px = col * K64_CELL_W;
-    nq_u32 py = row * K64_CELL_H;
+    nq_u32 py = screen_row * K64_CELL_H;
 
-    nq_u32 fg = k64_make_pixel(234, 234, 234);
-    nq_u32 bg = k64_make_pixel(0, 0, 0);
+    nq_u32 fg = k64_fg_color();
+    nq_u32 bg = k64_bg_color();
 
-    if (col >= g_cols || row >= g_rows) {
+    if (!fb64_available()) {
+        return;
+    }
+
+    if (col >= g_cols || screen_row >= g_rows) {
         return;
     }
 
@@ -119,46 +150,122 @@ static void k64_draw_char_at(nq_u32 col, nq_u32 row, char c) {
         for (nq_u32 gx = 0; gx < 8; gx++) {
             nq_u32 color = (bits & (0x80u >> gx)) ? fg : bg;
 
-            /*
-             * Draw 8x8 font doubled vertically into 8x16 cells.
-             */
-            k64_put_pixel(px + gx, py + gy * 2, color);
-            k64_put_pixel(px + gx, py + gy * 2 + 1, color);
+            fb64_put_pixel(px + gx, py + gy * 2, color);
+            fb64_put_pixel(px + gx, py + gy * 2 + 1, color);
         }
     }
 }
 
-static void k64_newline(void) {
-    g_cursor_col = 0;
-    g_cursor_row++;
+static void k64_draw_terminal_cell(
+    terminal64_session_t* t,
+    nq_u32 buffer_row,
+    nq_u32 col
+) {
+    if (!t || t != g_active_terminal) {
+        return;
+    }
 
-    /*
-     * Temporary behavior:
-     * When reaching the bottom, clear and restart below the header.
-     * This avoids ending on a blank black screen.
-     */
-    if (g_cursor_row >= g_rows) {
-        k64_clear_screen();
-        g_cursor_col = 0;
-        g_cursor_row = 3;
+    if (col >= g_cols || col >= TERM64_MAX_COLS) {
+        return;
+    }
+
+    if (buffer_row < t->view_top) {
+        return;
+    }
+
+    nq_u32 visible_index = buffer_row - t->view_top;
+
+    if (visible_index >= g_visible_rows) {
+        return;
+    }
+
+    nq_u32 screen_row = K64_CONTENT_START_ROW + visible_index;
+
+    k64_draw_char_at(
+        col,
+        screen_row,
+        term64_cell_char(t->buffer[buffer_row][col])
+    );
+}
+
+static void k64_render_text_area(void) {
+    terminal64_session_t* t = g_active_terminal;
+
+    if (!fb64_available() || !t) {
+        return;
+    }
+
+    nq_u32 text_y = K64_CONTENT_START_ROW * K64_CELL_H;
+    nq_u32 text_h = g_visible_rows * K64_CELL_H;
+
+    fb64_fill_rect(
+        0,
+        text_y,
+        fb64_width(),
+        text_h,
+        k64_bg_color()
+    );
+
+    for (nq_u32 r = 0; r < g_visible_rows; r++) {
+        nq_u32 buffer_row = t->view_top + r;
+
+        if (buffer_row >= TERM64_HISTORY_ROWS) {
+            break;
+        }
+
+        for (nq_u32 col = 0; col < g_cols && col < TERM64_MAX_COLS; col++) {
+            char c = term64_cell_char(t->buffer[buffer_row][col]);
+
+            if (c != ' ') {
+                k64_draw_char_at(col, K64_CONTENT_START_ROW + r, c);
+            }
+        }
     }
 }
 
-void k64_putchar(char c) {
+static void terminal64_newline_internal(terminal64_session_t* t) {
+    if (!t) {
+        return;
+    }
+
+    t->cursor_col = 0;
+
+    if (t->cursor_row + 1 >= TERM64_HISTORY_ROWS) {
+        terminal64_shift_history_up(t);
+        t->cursor_row = TERM64_HISTORY_ROWS - 1;
+    } else {
+        t->cursor_row++;
+    }
+
+    nq_u32 old_view_top = t->view_top;
+
+    terminal64_ensure_cursor_visible(t);
+
+    if (t == g_active_terminal && old_view_top != t->view_top) {
+        k64_render_text_area();
+    }
+}
+
+static void terminal64_put_char_internal(terminal64_session_t* t, char c) {
+    if (!t) {
+        return;
+    }
+
     if (c == '\n') {
-        k64_newline();
+        terminal64_newline_internal(t);
         return;
     }
 
     if (c == '\r') {
-        g_cursor_col = 0;
+        t->cursor_col = 0;
         return;
     }
 
     if (c == '\t') {
         do {
-            k64_putchar(' ');
-        } while ((g_cursor_col & 3u) != 0);
+            terminal64_put_char_internal(t, ' ');
+        } while ((t->cursor_col & 3u) != 0);
+
         return;
     }
 
@@ -166,32 +273,183 @@ void k64_putchar(char c) {
         return;
     }
 
-    k64_draw_char_at(g_cursor_col, g_cursor_row, c);
+    if (t->cursor_col >= g_cols || t->cursor_col >= TERM64_MAX_COLS) {
+        terminal64_newline_internal(t);
+    }
 
-    g_cursor_col++;
+    if (t->cursor_row >= TERM64_HISTORY_ROWS) {
+        t->cursor_row = TERM64_HISTORY_ROWS - 1;
+    }
 
-    if (g_cursor_col >= g_cols) {
-        k64_newline();
+    t->buffer[t->cursor_row][t->cursor_col] = term64_make_cell(c);
+
+    k64_draw_terminal_cell(t, t->cursor_row, t->cursor_col);
+
+    t->cursor_col++;
+
+    if (t->cursor_col >= g_cols || t->cursor_col >= TERM64_MAX_COLS) {
+        terminal64_newline_internal(t);
     }
 }
 
-void k64_backspace(void) {
-    if (!g_boot) {
+static void terminal64_backspace_internal(terminal64_session_t* t) {
+    if (!t) {
         return;
     }
 
-    if (g_cursor_col == 0) {
-        if (g_cursor_row == 0) {
+    if (t->cursor_col == 0) {
+        if (t->cursor_row == 0) {
             return;
         }
 
-        g_cursor_row--;
-        g_cursor_col = g_cols - 1;
+        t->cursor_row--;
+        t->cursor_col = g_cols ? g_cols - 1 : 0;
+
+        if (t->cursor_col >= TERM64_MAX_COLS) {
+            t->cursor_col = TERM64_MAX_COLS - 1;
+        }
     } else {
-        g_cursor_col--;
+        t->cursor_col--;
     }
 
-    k64_draw_char_at(g_cursor_col, g_cursor_row, ' ');
+    t->buffer[t->cursor_row][t->cursor_col] = term64_make_cell(' ');
+    terminal64_ensure_cursor_visible(t);
+
+    k64_draw_terminal_cell(t, t->cursor_row, t->cursor_col);
+}
+
+void terminal64_init_system(nq_u32 cols, nq_u32 visible_rows) {
+    mem_zero(g_terminals, sizeof(g_terminals));
+
+    if (cols > TERM64_MAX_COLS) {
+        cols = TERM64_MAX_COLS;
+    }
+
+    g_cols = cols;
+    g_visible_rows = visible_rows;
+
+    g_terminals[0].used = 1;
+    g_terminals[0].id = 0;
+
+    terminal64_clear_session(&g_terminals[0]);
+
+    g_kernel_terminal = &g_terminals[0];
+    g_active_terminal = &g_terminals[0];
+}
+
+terminal64_session_t* terminal64_create(void) {
+    for (nq_u32 i = 1; i < TERM64_MAX_SESSIONS; i++) {
+        if (!g_terminals[i].used) {
+            g_terminals[i].used = 1;
+            g_terminals[i].id = i;
+            terminal64_clear_session(&g_terminals[i]);
+            return &g_terminals[i];
+        }
+    }
+
+    return 0;
+}
+
+void terminal64_destroy(terminal64_session_t* t) {
+    if (!t || t == g_kernel_terminal) {
+        return;
+    }
+
+    if (g_active_terminal == t) {
+        terminal64_switch(g_kernel_terminal);
+    }
+
+    mem_zero(t, sizeof(*t));
+}
+
+terminal64_session_t* terminal64_kernel(void) {
+    return g_kernel_terminal;
+}
+
+terminal64_session_t* terminal64_active(void) {
+    return g_active_terminal;
+}
+
+void terminal64_switch(terminal64_session_t* t) {
+    if (!t || !t->used) {
+        return;
+    }
+
+    g_active_terminal = t;
+
+    if (fb64_available()) {
+        fb64_clear(k64_bg_color());
+        k64_draw_header();
+        k64_render_text_area();
+    }
+}
+
+nq_u32 terminal64_cursor_row(terminal64_session_t* t) {
+    return t ? t->cursor_row : 0;
+}
+
+nq_u32 terminal64_cursor_col(terminal64_session_t* t) {
+    return t ? t->cursor_col : 0;
+}
+
+nq_u32 terminal64_view_top(terminal64_session_t* t) {
+    return t ? t->view_top : 0;
+}
+
+nq_u32 terminal64_visible_rows(void) {
+    return g_visible_rows;
+}
+
+nq_u32 terminal64_cols(void) {
+    return g_cols;
+}
+
+void terminal64_print_summary(void) {
+    terminal64_session_t* t = g_active_terminal;
+
+    k64_print("Terminal64:\n");
+
+    k64_print("  cols=");
+    k64_print_dec64(g_cols);
+    k64_print(" visible_rows=");
+    k64_print_dec64(g_visible_rows);
+    k64_print(" history_rows=");
+    k64_print_dec64(TERM64_HISTORY_ROWS);
+    k64_print("\n");
+
+    if (t) {
+        k64_print("  active_id=");
+        k64_print_dec64(t->id);
+        k64_print(" cursor=(");
+        k64_print_dec64(t->cursor_col);
+        k64_print(",");
+        k64_print_dec64(t->cursor_row);
+        k64_print(") view_top=");
+        k64_print_dec64(t->view_top);
+        k64_print("\n");
+    }
+}
+
+void k64_clear_screen(void) {
+    terminal64_session_t* t = g_active_terminal;
+
+    if (!fb64_available() || !t) {
+        return;
+    }
+
+    terminal64_clear_session(t);
+
+    fb64_clear(k64_bg_color());
+    k64_draw_header();
+    k64_render_text_area();
+}
+
+void k64_putchar(char c) {
+    terminal64_put_char_internal(g_active_terminal, c);
+}
+
+void k64_backspace(void) {
+    terminal64_backspace_internal(g_active_terminal);
 }
 
 void k64_print(const char* s) {
@@ -234,34 +492,44 @@ void k64_print_dec64(nq_u64 value) {
 }
 
 static void k64_draw_header(void) {
-    nq_u32 bar = k64_make_pixel(0, 32, 64);
-    nq_u32 accent = k64_make_pixel(0, 220, 255);
+    nq_u32 bar = fb64_make_color(0, 32, 64);
+    nq_u32 accent = fb64_make_color(0, 220, 255);
 
-    k64_fill_rect(0, 0, g_boot->framebuffer_width, 40, bar);
-    k64_fill_rect(0, 39, g_boot->framebuffer_width, 2, accent);
+    if (!fb64_available()) {
+        return;
+    }
 
-    g_cursor_col = 2;
-    g_cursor_row = 1;
+    fb64_fill_rect(0, 0, fb64_width(), 40, bar);
+    fb64_fill_rect(0, 39, fb64_width(), 2, accent);
 
-    k64_print("NAQ OS 64-bit Kernel");
+    terminal64_session_t* saved = g_active_terminal;
 
-    g_cursor_col = 0;
-    g_cursor_row = 3;
+    /*
+     * Draw header directly, without changing terminal buffer.
+     */
+    const char* title = "NAQ OS 64-bit Kernel";
+
+    nq_u32 col = 2;
+    nq_u32 row = 1;
+
+    while (*title && col < g_cols) {
+        k64_draw_char_at(col, row, *title);
+        title++;
+        col++;
+    }
+
+    g_active_terminal = saved;
 }
 
 void k64_console_init(naq_boot_info_t* boot) {
-    g_boot = boot;
-
-    if (!g_boot ||
-        g_boot->magic != NAQ_BOOT_INFO_MAGIC ||
-        g_boot->version != NAQ_BOOT_INFO_VERSION) {
+    if (!fb64_init(boot)) {
         for (;;) {
             __asm__ volatile ("hlt");
         }
     }
 
-    g_cols = g_boot->framebuffer_width / K64_CELL_W;
-    g_rows = g_boot->framebuffer_height / K64_CELL_H;
+    g_rows = fb64_height() / K64_CELL_H;
+    g_cols = fb64_width() / K64_CELL_W;
 
     if (g_cols == 0) {
         g_cols = 1;
@@ -271,6 +539,19 @@ void k64_console_init(naq_boot_info_t* boot) {
         g_rows = 1;
     }
 
-    k64_clear_screen();
+    if (g_cols > TERM64_MAX_COLS) {
+        g_cols = TERM64_MAX_COLS;
+    }
+
+    if (g_rows <= K64_CONTENT_START_ROW) {
+        g_visible_rows = 1;
+    } else {
+        g_visible_rows = g_rows - K64_CONTENT_START_ROW;
+    }
+
+    terminal64_init_system(g_cols, g_visible_rows);
+
+    fb64_clear(k64_bg_color());
     k64_draw_header();
+    k64_render_text_area();
 }
