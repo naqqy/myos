@@ -72,6 +72,152 @@ static void shell64_clear_input(void) {
     g_input_len = 0;
 }
 
+static nq_u64 shell64_strlen(const char* s) {
+    nq_u64 len = 0;
+
+    if (!s) {
+        return 0;
+    }
+
+    while (s[len]) {
+        len++;
+    }
+
+    return len;
+}
+
+static int shell64_parse_echo_append(
+    const char* arg,
+    const char** out_text,
+    nq_u64* out_text_len,
+    const char** out_path
+) {
+    const char* text_start;
+    const char* text_end;
+    const char* p;
+
+    if (!arg || !out_text || !out_text_len || !out_path) {
+        return 0;
+    }
+
+    *out_text = 0;
+    *out_text_len = 0;
+    *out_path = 0;
+
+    if (!str_starts_with(arg, "echo ")) {
+        return 0;
+    }
+
+    p = skip_spaces(arg + 5);
+
+    /*
+     * Supports:
+     *   echo "hello world" >> /LOG.TXT
+     *   echo hello >> /LOG.TXT
+     */
+    if (*p == '"') {
+        p++;
+        text_start = p;
+
+        while (*p && *p != '"') {
+            p++;
+        }
+
+        if (*p != '"') {
+            return 0;
+        }
+
+        text_end = p;
+        p++;
+    } else {
+        text_start = p;
+
+        while (*p) {
+            if (p[0] == '>' && p[1] == '>') {
+                break;
+            }
+
+            p++;
+        }
+
+        text_end = p;
+
+        /*
+         * Trim spaces before >>.
+         */
+        while (text_end > text_start &&
+               (text_end[-1] == ' ' || text_end[-1] == '\t')) {
+            text_end--;
+        }
+    }
+
+    p = skip_spaces(p);
+
+    if (p[0] != '>' || p[1] != '>') {
+        return 0;
+    }
+
+    p += 2;
+    p = skip_spaces(p);
+
+    if (!*p) {
+        return 0;
+    }
+
+    *out_text = text_start;
+    *out_text_len = (nq_u64)(text_end - text_start);
+    *out_path = p;
+
+    return 1;
+}
+
+static void shell64_echo_append(const char* arg) {
+    const char* text;
+    const char* path;
+    nq_u64 text_len = 0;
+    nq_u64 old_size = 0;
+    nq_u64 new_size = 0;
+
+    if (!shell64_parse_echo_append(arg, &text, &text_len, &path)) {
+        k64_print("Usage: echo \"TEXT\" >> <path>\n");
+        return;
+    }
+
+    /*
+     * Reuse g_file_buffer as the append/write buffer.
+     * Behavior:
+     *   existing file found -> append text + newline
+     *   file missing        -> create file with text + newline
+     */
+    if (!vfs64_read_file(path, g_file_buffer, SHELL64_FILE_BUFFER_SIZE, &old_size)) {
+        old_size = 0;
+    }
+
+    new_size = old_size + text_len + 1u;
+
+    if (new_size > SHELL64_FILE_BUFFER_SIZE) {
+        k64_print("echo: file would exceed shell buffer size.\n");
+        return;
+    }
+
+    for (nq_u64 i = 0; i < text_len; i++) {
+        g_file_buffer[old_size + i] = (nq_u8)text[i];
+    }
+
+    g_file_buffer[old_size + text_len] = '\n';
+
+    if (!vfs64_write_file(path, g_file_buffer, new_size)) {
+        k64_print("echo: write failed. New files currently need 8.3 names.\n");
+        return;
+    }
+
+    k64_print("Wrote ");
+    k64_print_dec64(new_size);
+    k64_print(" bytes to ");
+    k64_print(path);
+    k64_print("\n");
+}
+
 static void shell64_prompt(void) {
     k64_print("KER64 > ");
 }
@@ -81,6 +227,10 @@ static void shell64_print_help(void) {
     k64_print("  help          - show this help\n");
     k64_print("  about         - show kernel info\n");
     k64_print("  clear / cls   - clear screen\n");
+    k64_print("  mkdir <path>  - create directory\n");
+    k64_print("  rm <path>     - remove file\n");
+    k64_print("  rmdir <path>  - remove empty directory\n");
+    k64_print("  echo \"TEXT\" >> <path> - append text to file\n");
     k64_print("  echo <text>   - print text\n");
     k64_print("  ls            - list root directory\n");
     k64_print("  ls <path>     - list directory/file\n");
@@ -360,8 +510,52 @@ static void shell64_execute_command(void) {
         k64_clear_screen();
     }
     else if (str_starts_with(arg, "echo ")) {
-        k64_print(skip_spaces(arg + 5));
+        const char* text = 0;
+        const char* path = 0;
+        nq_u64 text_len = 0;
+
+        if (shell64_parse_echo_append(arg, &text, &text_len, &path)) {
+            shell64_echo_append(arg);
+        } else {
+            k64_print(skip_spaces(arg + 5));
+            k64_print("\n");
+        }
+    }
+    else if (str_eq(arg, "echo")) {
         k64_print("\n");
+    }
+    else if (str_starts_with(arg, "mkdir ")) {
+        const char* path = skip_spaces(arg + 6);
+
+        if (!path[0]) {
+            k64_print("Usage: mkdir <path>\n");
+        } else if (vfs64_mkdir(path)) {
+            k64_print("Directory created.\n");
+        } else {
+            k64_print("mkdir failed. New directories currently need 8.3 names.\n");
+        }
+    }
+    else if (str_starts_with(arg, "rm ")) {
+        const char* path = skip_spaces(arg + 3);
+
+        if (!path[0]) {
+            k64_print("Usage: rm <path>\n");
+        } else if (vfs64_rm(path)) {
+            k64_print("File removed.\n");
+        } else {
+            k64_print("rm failed.\n");
+        }
+    }
+    else if (str_starts_with(arg, "rmdir ")) {
+        const char* path = skip_spaces(arg + 6);
+
+        if (!path[0]) {
+            k64_print("Usage: rmdir <path>\n");
+        } else if (vfs64_rmdir(path)) {
+            k64_print("Directory removed.\n");
+        } else {
+            k64_print("rmdir failed. Directory must be empty.\n");
+        }
     }
     else if (str_eq(arg, "echo")) {
         k64_print("\n");
@@ -438,15 +632,6 @@ static void shell64_execute_command(void) {
     /*
      * Old-shell commands intentionally reserved for later ports.
      */
-    else if (str_starts_with(arg, "mkdir ")) {
-        shell64_not_ready("mkdir");
-    }
-    else if (str_starts_with(arg, "rm ")) {
-        shell64_not_ready("rm");
-    }
-    else if (str_starts_with(arg, "rmdir ")) {
-        shell64_not_ready("rmdir");
-    }
     else if (str_starts_with(arg, "run ")) {
         shell64_not_ready("run");
     }

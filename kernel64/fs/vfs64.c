@@ -286,3 +286,79 @@ int vfs64_read_file(
         out_size
     );
 }
+
+int vfs64_write_file(
+    const char* path,
+    const void* data,
+    nq_u64 size
+) {
+    char normalized[VFS64_MAX_PATH];
+
+    if (!g_vfs_mounted) {
+        k64_print("vfs64: root filesystem not mounted\n");
+        return 0;
+    }
+
+    if (size > 0 && !data) {
+        return 0;
+    }
+
+    if (!vfs64_normalize_path(path, normalized, sizeof(normalized))) {
+        k64_print("vfs64: invalid or too-long path\n");
+        return 0;
+    }
+
+    return fat32_64_write_file_path(
+        normalized,
+        (const nq_u8*)data,
+        size
+    );
+}
+
+int vfs64_mkdir(const char* path) {
+    char normalized[VFS64_MAX_PATH];
+
+    if (!g_vfs_mounted) {
+        k64_print("vfs64: root filesystem not mounted\n");
+        return 0;
+    }
+
+    if (!vfs64_normalize_path(path, normalized, sizeof(normalized))) {
+        k64_print("vfs64: invalid or too-long path\n");
+        return 0;
+    }
+
+    return fat32_64_mkdir_path(normalized);
+}
+
+int vfs64_rm(const char* path) {
+    char normalized[VFS64_MAX_PATH];
+
+    if (!g_vfs_mounted) {
+        k64_print("vfs64: root filesystem not mounted\n");
+        return 0;
+    }
+
+    if (!vfs64_normalize_path(path, normalized, sizeof(normalized))) {
+        k64_print("vfs64: invalid or too-long path\n");
+        return 0;
+    }
+
+    return fat32_64_rm_path(normalized);
+}
+
+int vfs64_rmdir(const char* path) {
+    char normalized[VFS64_MAX_PATH];
+
+    if (!g_vfs_mounted) {
+        k64_print("vfs64: root filesystem not mounted\n");
+        return 0;
+    }
+
+    if (!vfs64_normalize_path(path, normalized, sizeof(normalized))) {
+        k64_print("vfs64: invalid or too-long path\n");
+        return 0;
+    }
+
+    return fat32_64_rmdir_path(normalized);
+}

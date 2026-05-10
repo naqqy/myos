@@ -1212,6 +1212,17 @@ run_qemu_uefi() {
   echo "OVMF_CODE: $OVMF_CODE"
   echo "OVMF_VARS: $OVMF_VARS"
   echo "UEFI_IMG : $UEFI_IMG"
+  
+  local qemu_debug_args=()
+
+  if [[ "${QEMU_DEBUG:-0}" == "1" ]]; then
+    qemu_debug_args=(
+      -no-reboot
+      -no-shutdown
+      -d int,cpu_reset,guest_errors
+      -D "$BUILD_DIR/qemu-uefi.log"
+    )
+  fi
 
   "$QEMU64" \
     -machine pc \
@@ -1223,7 +1234,8 @@ run_qemu_uefi() {
     -vga std \
     -monitor none \
     -serial none \
-    -net none
+    -net none \
+    "${qemu_debug_args[@]}"
 }
 
 build_vbox_disk() {

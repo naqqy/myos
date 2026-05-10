@@ -16,4 +16,14 @@ int fat32_64_read_file_path(
     nq_u64* out_size
 );
 
+int fat32_64_write_file_path(
+    const char* path,
+    const nq_u8* data,
+    nq_u64 size
+);
+
+int fat32_64_mkdir_path(const char* path);
+int fat32_64_rm_path(const char* path);
+int fat32_64_rmdir_path(const char* path);
+
 #endif

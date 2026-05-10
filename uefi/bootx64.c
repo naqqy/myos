@@ -14,7 +14,8 @@
  * Early kernel reservation.
  * Covers flat binary + BSS/static storage until we have exact ELF/kernel-end metadata.
  */
-#define UEFI_KERNEL64_MIN_ALLOC_PAGES 1024u  /* 4 MiB */
+#define UEFI_KERNEL64_ALLOC_PAGES 1024u  /* 4 MiB */
+#define UEFI_KERNEL64_PMM_RESERVE_PAGES  4096u  /* 16 MiB */
 
 static const CHAR16* pixel_format_name(EFI_GRAPHICS_PIXEL_FORMAT fmt) {
     switch (fmt) {
@@ -306,13 +307,16 @@ static EFI_STATUS load_kernel64_to_fixed_address(
     }
 
     file_pages = (file_size + 0xFFFu) / 0x1000u;
-    alloc_pages = file_pages;
 
-    if (alloc_pages < UEFI_KERNEL64_MIN_ALLOC_PAGES) {
-        alloc_pages = UEFI_KERNEL64_MIN_ALLOC_PAGES;
+    alloc_pages = file_pages;
+    if (alloc_pages < UEFI_KERNEL64_ALLOC_PAGES) {
+        alloc_pages = UEFI_KERNEL64_ALLOC_PAGES;
     }
 
     alloc_bytes = alloc_pages * 4096u;
+
+    UINTN reserve_pages = UEFI_KERNEL64_PMM_RESERVE_PAGES;
+    UINTN reserve_bytes = reserve_pages * 4096u;
 
     status = uefi_call_wrapper(
         BS->AllocatePages,
@@ -371,7 +375,7 @@ static EFI_STATUS load_kernel64_to_fixed_address(
      * This is the reserved kernel memory size, not only the file size.
      * PMM64 uses this to avoid handing kernel-owned memory to kmem64.
      */
-    g_boot_info.kernel_size = (nq_u64)alloc_bytes;
+    g_boot_info.kernel_size = (nq_u64)reserve_bytes;
 
     /*
      * Return the file size for display only.

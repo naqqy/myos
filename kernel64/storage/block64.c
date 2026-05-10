@@ -19,6 +19,9 @@
 #define ATA_CMD_IDENTIFY       0xEC
 #define ATA_CMD_READ_SECTORS   0x20
 
+#define ATA_CMD_WRITE_SECTORS  0x30
+#define ATA_CMD_CACHE_FLUSH    0xE7
+
 #define ATA_SR_ERR   0x01
 #define ATA_SR_DRQ   0x08
 #define ATA_SR_DF    0x20
@@ -190,6 +193,50 @@ static int ata_read_one_sector_lba28(nq_u32 lba, void* buffer) {
     return 1;
 }
 
+static int ata_write_one_sector_lba28(nq_u32 lba, const void* buffer) {
+    if (!buffer) {
+        return 0;
+    }
+
+    if (!ata_wait_not_busy()) {
+        return 0;
+    }
+
+    ata_select_primary_master_lba28(lba);
+
+    outb(ATA_PRIMARY_IO + ATA_REG_FEATURES, 0);
+    outb(ATA_PRIMARY_IO + ATA_REG_SECCOUNT0, 1);
+    outb(ATA_PRIMARY_IO + ATA_REG_LBA0, (nq_u8)(lba & 0xFFu));
+    outb(ATA_PRIMARY_IO + ATA_REG_LBA1, (nq_u8)((lba >> 8) & 0xFFu));
+    outb(ATA_PRIMARY_IO + ATA_REG_LBA2, (nq_u8)((lba >> 16) & 0xFFu));
+
+    outb(ATA_PRIMARY_IO + ATA_REG_COMMAND, ATA_CMD_WRITE_SECTORS);
+
+    if (!ata_wait_drq_or_error()) {
+        return 0;
+    }
+
+    const nq_u8* in = (const nq_u8*)buffer;
+
+    for (nq_u32 i = 0; i < 256; i++) {
+        nq_u16 word =
+            ((nq_u16)in[i * 2]) |
+            ((nq_u16)in[i * 2 + 1] << 8);
+
+        outw(ATA_PRIMARY_IO + ATA_REG_DATA, word);
+    }
+
+    outb(ATA_PRIMARY_IO + ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
+
+    if (!ata_wait_not_busy()) {
+        return 0;
+    }
+
+    ata_400ns_delay();
+
+    return 1;
+}
+
 int block64_init(void) {
     if (!ata_identify_primary_master()) {
         g_block_ready = 0;
@@ -238,14 +285,36 @@ int block64_read(nq_u64 lba, void* buffer, nq_u32 sector_count) {
 }
 
 int block64_write(nq_u64 lba, const void* buffer, nq_u32 sector_count) {
-    (void)lba;
-    (void)buffer;
-    (void)sector_count;
+    if (!g_block_ready || !buffer) {
+        return 0;
+    }
+
+    if (sector_count == 0) {
+        return 1;
+    }
 
     /*
-     * Read-only for now.
+     * Early version: LBA28 only.
      */
-    return 0;
+    if (lba > 0x0FFFFFFFull) {
+        return 0;
+    }
+
+    if ((lba + sector_count) > 0x10000000ull) {
+        return 0;
+    }
+
+    const nq_u8* in = (const nq_u8*)buffer;
+
+    for (nq_u32 i = 0; i < sector_count; i++) {
+        if (!ata_write_one_sector_lba28(
+                (nq_u32)(lba + i),
+                in + ((nq_u64)i * BLOCK64_SECTOR_SIZE))) {
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 nq_u64 block64_sector_count(void) {

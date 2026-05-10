@@ -20,4 +20,14 @@ int vfs64_read_file(
     nq_u64* out_size
 );
 
+int vfs64_write_file(
+    const char* path,
+    const void* data,
+    nq_u64 size
+);
+
+int vfs64_mkdir(const char* path);
+int vfs64_rm(const char* path);
+int vfs64_rmdir(const char* path);
+
 #endif

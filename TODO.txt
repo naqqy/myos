@@ -30,16 +30,17 @@ vfs64_mount_root()
 
 13 Port terminal sessions/history. // DONE
 
-14 Add FAT32 write support: // TODO
+14 Add FAT32 write support: // DONE
 mkdir
 rm
 rmdir
 write file
 
-15 Add shell write commands: // TODO
+15 Add shell write commands: // DONE
 mkdir <path>
 rm <path>
 rmdir <path>
+echo "TEXT" >> <path>
 
 16 Add context_switch64.asm. // TODO
 
@@ -89,6 +90,8 @@ private app terminals
 33 Add automatic boot splash before shell starts. // TODO
 
 34 Add aspect-ratio preserving PNG conversion. // TODO
+
+35 Move large static buffers to kmalloc64. // TODO
 
 Later: add AHCI/SATA backend under block64. // TODO
 

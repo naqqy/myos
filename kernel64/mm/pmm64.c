@@ -9,7 +9,7 @@ static nq_u64 pmm64_usable_frame_count = 0;
 static nq_u64 pmm64_next_search = 0;
 static int pmm64_ready = 0;
 
-#define PMM64_EARLY_KERNEL_RESERVE_SIZE (4ull * 1024ull * 1024ull)
+#define PMM64_EARLY_KERNEL_RESERVE_SIZE (16ull * 1024ull * 1024ull)
 
 static nq_u64 align_down64(nq_u64 value, nq_u64 align) {
     return value & ~(align - 1ull);
