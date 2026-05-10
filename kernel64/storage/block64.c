@@ -317,6 +317,13 @@ int block64_write(nq_u64 lba, const void* buffer, nq_u32 sector_count) {
     return 1;
 }
 
+// int block64_write(nq_u64 lba, const void* buffer, nq_u32 sector_count) {
+//     (void)lba;
+//     (void)buffer;
+//     (void)sector_count;
+//     return 0;
+// }
+
 nq_u64 block64_sector_count(void) {
     return g_sector_count;
 }

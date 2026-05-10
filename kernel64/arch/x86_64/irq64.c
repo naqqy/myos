@@ -4,6 +4,7 @@
 #include "timer64.h"
 #include "../../k64_console.h"
 #include "../../input/kinput64.h"
+#include "../../proc/process64.h"
 
 #define PIC1_COMMAND 0x20
 #define PIC1_DATA    0x21
@@ -153,6 +154,15 @@ void irq_handler64(irq_frame64_t* frame) {
 
     if (irq == 0) {
         timer64_on_irq();
+
+        pic_send_eoi((nq_u8)irq);
+
+        /*
+        * Kernel task preemption.
+        * This may context-switch before returning from the IRQ.
+        */
+        process64_on_timer_tick();
+        return;
     } else if (irq == 1) {
         nq_u8 scancode = inb(0x60);
         keyboard_handle_scancode(scancode);

@@ -247,6 +247,13 @@ static void pmm64_reserve_boot_regions(const naq_boot_info_t* boot) {
         (nq_u64)pmm64_bitmap,
         sizeof(pmm64_bitmap)
     );
+
+    if (boot->initrd_base && boot->initrd_size) {
+        pmm64_reserve_region(
+            boot->initrd_base,
+            boot->initrd_size
+        );
+    }
 }
 
 int pmm64_init(const naq_boot_info_t* boot) {

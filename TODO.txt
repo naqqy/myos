@@ -42,13 +42,13 @@ rm <path>
 rmdir <path>
 echo "TEXT" >> <path>
 
-16 Add context_switch64.asm. // TODO
+16 Add context_switch64.asm. // DONE
 
-17 Add kernel-only process64 task system. // TODO
+17 Add kernel-only process64 task system. // DONE
 
-18 Add cooperative kernel-task scheduler. // TODO
+18 Add basic cooperative kernel-task scheduler. // DONE
 
-19 Add timer preemption for kernel tasks. // TODO
+19 Add timer preemption for kernel tasks. // DONE
 
 20 Add shell process commands: // TODO
 ps

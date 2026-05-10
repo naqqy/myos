@@ -54,6 +54,9 @@ typedef struct naq_boot_info {
     nq_u64 stack_size;
     nq_u64 stack_top;
 
+    nq_u64 initrd_base;
+    nq_u64 initrd_size;
+
     nq_u64 memory_map;
     nq_u64 memory_map_size;
     nq_u64 memory_map_desc_size;

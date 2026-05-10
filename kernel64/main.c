@@ -18,6 +18,9 @@
 #include "storage/block64.h"
 
 #include "fs/vfs64.h"
+#include "fs/initrd64.h"
+
+#include "proc/process64.h"
 
 static void halt_forever(void) {
     for (;;) {
@@ -96,6 +99,17 @@ void kmain64(naq_boot_info_t* boot) {
 //    pmm64_print_summary();
     kernel64_test_pmm();
 
+    if (boot->initrd_base && boot->initrd_size) {
+        if (initrd64_init(boot->initrd_base, boot->initrd_size)) {
+            k64_print("INITRD64 initialized.\n");
+            initrd64_print_summary();
+        } else {
+            k64_print("INITRD64 invalid.\n");
+        }
+    } else {
+        k64_print("No INITRD provided.\n");
+    }
+
     if (!paging64_init(boot)) {
         k64_print("Paging64 initialization failed.\n");
         halt_forever();
@@ -138,6 +152,8 @@ void kmain64(naq_boot_info_t* boot) {
     } else {
         k64_print("VFS64 mount failed.\n");
     }
+
+    process64_init();
 
     k64_print("\n");
 

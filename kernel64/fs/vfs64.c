@@ -1,8 +1,17 @@
 #include "vfs64.h"
 #include "fat32_64.h"
+#include "initrd64.h"
 #include "../k64_console.h"
 
 static int g_vfs_mounted = 0;
+
+typedef enum vfs64_backend {
+    VFS64_BACKEND_NONE = 0,
+    VFS64_BACKEND_FAT32,
+    VFS64_BACKEND_INITRD
+} vfs64_backend_t;
+
+static vfs64_backend_t g_vfs_backend = VFS64_BACKEND_NONE;
 
 static int is_sep(char c) {
     return c == '/' || c == '\\';
@@ -205,17 +214,21 @@ int vfs64_normalize_path(const char* input, char* output, nq_u64 output_size) {
 
 int vfs64_mount_root(void) {
     g_vfs_mounted = 0;
+    g_vfs_backend = VFS64_BACKEND_NONE;
 
-    /*
-     * Current UEFI image is a raw FAT32 image, so root FS starts at LBA 0.
-     * Later this can detect partitions and choose FAT32/ext4/etc.
-     */
-    if (!fat32_64_init(0)) {
-        return 0;
+    if (fat32_64_init(0)) {
+        g_vfs_mounted = 1;
+        g_vfs_backend = VFS64_BACKEND_FAT32;
+        return 1;
     }
 
-    g_vfs_mounted = 1;
-    return 1;
+    if (initrd64_available()) {
+        g_vfs_mounted = 1;
+        g_vfs_backend = VFS64_BACKEND_INITRD;
+        return 1;
+    }
+
+    return 0;
 }
 
 int vfs64_mounted(void) {
@@ -250,7 +263,15 @@ int vfs64_list_dir(const char* path) {
         return 0;
     }
 
-    return fat32_64_list_path(normalized);
+    if (g_vfs_backend == VFS64_BACKEND_FAT32) {
+        return fat32_64_list_path(normalized);
+    }
+
+    if (g_vfs_backend == VFS64_BACKEND_INITRD) {
+        return initrd64_list_path(normalized);
+    }
+
+    return 0;
 }
 
 int vfs64_read_file(
@@ -279,12 +300,25 @@ int vfs64_read_file(
         return 0;
     }
 
-    return fat32_64_read_file_path(
-        normalized,
-        (nq_u8*)out_buf,
-        max_bytes,
-        out_size
-    );
+    if (g_vfs_backend == VFS64_BACKEND_FAT32) {
+        return fat32_64_read_file_path(
+            normalized,
+            (nq_u8*)out_buf,
+            max_bytes,
+            out_size
+        );
+    }
+
+    if (g_vfs_backend == VFS64_BACKEND_INITRD) {
+        return initrd64_read_file(
+            normalized,
+            out_buf,
+            max_bytes,
+            out_size
+        );
+    }
+
+    return 0;
 }
 
 int vfs64_write_file(
@@ -292,6 +326,11 @@ int vfs64_write_file(
     const void* data,
     nq_u64 size
 ) {
+    if (g_vfs_backend != VFS64_BACKEND_FAT32) {
+        k64_print("vfs64: root filesystem is read-only\n");
+        return 0;
+    }
+
     char normalized[VFS64_MAX_PATH];
 
     if (!g_vfs_mounted) {
@@ -316,6 +355,11 @@ int vfs64_write_file(
 }
 
 int vfs64_mkdir(const char* path) {
+    if (g_vfs_backend != VFS64_BACKEND_FAT32) {
+        k64_print("vfs64: root filesystem is read-only\n");
+        return 0;
+    }
+
     char normalized[VFS64_MAX_PATH];
 
     if (!g_vfs_mounted) {
@@ -332,6 +376,11 @@ int vfs64_mkdir(const char* path) {
 }
 
 int vfs64_rm(const char* path) {
+    if (g_vfs_backend != VFS64_BACKEND_FAT32) {
+        k64_print("vfs64: root filesystem is read-only\n");
+        return 0;
+    }
+
     char normalized[VFS64_MAX_PATH];
 
     if (!g_vfs_mounted) {
@@ -348,6 +397,11 @@ int vfs64_rm(const char* path) {
 }
 
 int vfs64_rmdir(const char* path) {
+    if (g_vfs_backend != VFS64_BACKEND_FAT32) {
+        k64_print("vfs64: root filesystem is read-only\n");
+        return 0;
+    }
+
     char normalized[VFS64_MAX_PATH];
 
     if (!g_vfs_mounted) {

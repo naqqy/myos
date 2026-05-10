@@ -20,6 +20,8 @@
 
 #include "../console/terminal64.h"
 
+#include "../proc/process64.h"
+
 #define SHELL64_INPUT_MAX 128
 #define SHELL64_FILE_BUFFER_SIZE 65536u
 #define SHELL64_IMAGE_BUFFER_SIZE (1024u * 1024u)
@@ -251,6 +253,12 @@ static void shell64_print_help(void) {
     k64_print("  nimg <file>   - draw centered NIMG image\n");
     k64_print("  splash        - draw /boot/splash.ni if present\n");
     k64_print("  term          - show terminal/session info\n");
+    k64_print("  ps            - show kernel tasks\n");
+    k64_print("  proctest      - create two cooperative test tasks\n");
+    k64_print("  preempton     - enable timer preemption\n");
+    k64_print("  preemptoff    - disable timer preemption\n");
+    k64_print("  schedstat     - show scheduler status\n");
+    k64_print("  busytest      - create CPU-bound preemption test tasks\n");
     k64_print("  reboot        - reboot machine\n");
     k64_print("  shutdown      - power off emulator\n");
 }
@@ -380,6 +388,60 @@ static void shell64_print_hex8(nq_u8 value) {
     k64_putchar(hex[value & 0x0F]);
 }
 
+static volatile nq_u64 g_busy_sink = 0;
+
+static void shell64_busy_task_a(void* arg) {
+    (void)arg;
+
+    for (nq_u32 round = 0; round < 12; round++) {
+        for (nq_u64 i = 0; i < 8000000ull; i++) {
+            g_busy_sink += i;
+        }
+
+        k64_print("[busy A] round ");
+        k64_print_dec64(round);
+        k64_print("\n");
+    }
+}
+
+static void shell64_busy_task_b(void* arg) {
+    (void)arg;
+
+    for (nq_u32 round = 0; round < 12; round++) {
+        for (nq_u64 i = 0; i < 8000000ull; i++) {
+            g_busy_sink += i;
+        }
+
+        k64_print("[busy B] round ");
+        k64_print_dec64(round);
+        k64_print("\n");
+    }
+}
+
+static void shell64_start_busy_test(void) {
+    int a = process64_create_kernel_task(
+        "busy-a",
+        shell64_busy_task_a,
+        0
+    );
+
+    int b = process64_create_kernel_task(
+        "busy-b",
+        shell64_busy_task_b,
+        0
+    );
+
+    k64_print("Created busy task A pid=");
+    k64_print_dec64((nq_u64)a);
+    k64_print("\n");
+
+    k64_print("Created busy task B pid=");
+    k64_print_dec64((nq_u64)b);
+    k64_print("\n");
+
+    k64_print("Run 'preempton' to let timer IRQs preempt them.\n");
+}
+
 static void shell64_blockdump(const char* arg) {
     static nq_u8 sector[BLOCK64_SECTOR_SIZE];
     nq_u64 lba = 0;
@@ -414,6 +476,52 @@ static void shell64_blockdump(const char* arg) {
         k64_putchar(' ');
     }
 
+    k64_print("\n");
+}
+
+static void shell64_test_task_a(void* arg) {
+    (void)arg;
+
+    for (nq_u32 i = 0; i < 8; i++) {
+        k64_print("[task A] tick ");
+        k64_print_dec64(i);
+        k64_print("\n");
+
+        process64_yield();
+    }
+}
+
+static void shell64_test_task_b(void* arg) {
+    (void)arg;
+
+    for (nq_u32 i = 0; i < 8; i++) {
+        k64_print("[task B] tick ");
+        k64_print_dec64(i);
+        k64_print("\n");
+
+        process64_yield();
+    }
+}
+
+static void shell64_start_process_test(void) {
+    int a = process64_create_kernel_task(
+        "test-a",
+        shell64_test_task_a,
+        0
+    );
+
+    int b = process64_create_kernel_task(
+        "test-b",
+        shell64_test_task_b,
+        0
+    );
+
+    k64_print("Created task A pid=");
+    k64_print_dec64((nq_u64)a);
+    k64_print("\n");
+
+    k64_print("Created task B pid=");
+    k64_print_dec64((nq_u64)b);
     k64_print("\n");
 }
 
@@ -620,6 +728,26 @@ static void shell64_execute_command(void) {
     else if (str_eq(arg, "term")) {
         terminal64_print_summary();
     }
+    else if (str_eq(arg, "ps")) {
+    process64_print_summary();
+    }
+    else if (str_eq(arg, "proctest")) {
+        shell64_start_process_test();
+    }
+    else if (str_eq(arg, "preempton")) {
+        process64_enable_preemption();
+        k64_print("Timer preemption enabled.\n");
+    }
+    else if (str_eq(arg, "preemptoff")) {
+        process64_disable_preemption();
+        k64_print("Timer preemption disabled.\n");
+    }
+    else if (str_eq(arg, "schedstat")) {
+        process64_print_summary();
+    }
+    else if (str_eq(arg, "busytest")) {
+        shell64_start_busy_test();
+    }
     else if (str_eq(arg, "reboot")) {
         k64_print("Rebooting...\n");
         power64_reboot();
@@ -637,9 +765,6 @@ static void shell64_execute_command(void) {
     }
     else if (str_starts_with(arg, "spawn ")) {
         shell64_not_ready("spawn");
-    }
-    else if (str_eq(arg, "ps")) {
-        shell64_not_ready("ps");
     }
     else if (str_eq(arg, "sched") || str_eq(arg, "schedstat")) {
         shell64_not_ready("scheduler");

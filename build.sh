@@ -200,6 +200,12 @@ KERNEL64_FB64_OBJ="$BUILD_DIR/framebuffer64.o"
 KERNEL64_IMAGE_C="$KERNEL64_DIR/graphics/image64.c"
 KERNEL64_IMAGE_OBJ="$BUILD_DIR/image64.o"
 
+KERNEL64_INITRD_C="$KERNEL64_DIR/fs/initrd64.c"
+KERNEL64_INITRD_OBJ="$BUILD_DIR/initrd64.o"
+
+KERNEL64_PROCESS_C="$KERNEL64_DIR/proc/process64.c"
+KERNEL64_PROCESS_OBJ="$BUILD_DIR/process64.o"
+
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 VBOX_VM_NAME="${VBOX_VM_NAME:-NAQ OS}"
 VBOX_VDI="$BUILD_DIR/naqos.vdi"
@@ -207,6 +213,14 @@ VBOX_VDI="$BUILD_DIR/naqos.vdi"
 ASSETS_FS_DIR="${ASSETS_FS_DIR:-assets/fs}"
 ASSETS_BUILD_DIR="$BUILD_DIR/assets_fs"
 NIMG_TOOL="${NIMG_TOOL:-tools/make_nimg.py}"
+COPY_ASSETS_TO_UEFI="${COPY_ASSETS_TO_UEFI:-0}"
+
+INITRD_TOOL="${INITRD_TOOL:-tools/make_initrd.py}"
+INITRD_IMG="$BUILD_DIR/INITRD.NAQ"
+INITRD_FS_DIR="$BUILD_DIR/initrd_fs"
+
+KERNEL64_CONTEXT_SWITCH_ASM="$KERNEL64_DIR/arch/x86_64/context_switch64.asm"
+KERNEL64_CONTEXT_SWITCH_OBJ="$BUILD_DIR/context_switch64.o"
 
 # Disk layout
 STAGE2_SECTORS=64
@@ -844,6 +858,44 @@ build_kernel64() {
     -c "$KERNEL64_IMAGE_C" \
     -o "$KERNEL64_IMAGE_OBJ"
 
+  msg "Compiling 64-bit initrd filesystem"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_INITRD_C" \
+    -o "$KERNEL64_INITRD_OBJ"
+
+  msg "Assembling 64-bit context switch"
+  "$NASM" \
+    -f elf64 \
+    "$KERNEL64_CONTEXT_SWITCH_ASM" \
+    -o "$KERNEL64_CONTEXT_SWITCH_OBJ"
+
+  msg "Compiling 64-bit kernel process system"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_PROCESS_C" \
+    -o "$KERNEL64_PROCESS_OBJ"
+
   msg "Linking 64-bit kernel ELF"
   "$LD" \
     -m elf_x86_64 \
@@ -870,7 +922,10 @@ build_kernel64() {
     "$KERNEL64_FAT32_OBJ" \
     "$KERNEL64_VFS_OBJ" \
     "$KERNEL64_FB64_OBJ" \
-    "$KERNEL64_IMAGE_OBJ"
+    "$KERNEL64_IMAGE_OBJ" \
+    "$KERNEL64_INITRD_OBJ" \
+    "$KERNEL64_CONTEXT_SWITCH_OBJ" \
+    "$KERNEL64_PROCESS_OBJ"
 
   msg "Converting 64-bit kernel ELF to flat binary"
   "$OBJCOPY" -O binary "$KERNEL64_ELF" "$KERNEL64_BIN"
@@ -1111,6 +1166,34 @@ build_uefi() {
   echo "UEFI app size: $(stat -c%s "$UEFI_EFI") bytes"
 }
 
+build_initrd() {
+  msg "Building INITRD.NAQ"
+
+  rm -rf "$INITRD_FS_DIR"
+  mkdir -p "$INITRD_FS_DIR"
+
+  if [[ -d "$ASSETS_FS_DIR" ]]; then
+    cp -a "$ASSETS_FS_DIR"/. "$INITRD_FS_DIR"/
+  fi
+
+  # Convert PNG assets in the initrd copy to .ni and remove the PNG.
+  while IFS= read -r -d '' png; do
+    local rel="${png#$INITRD_FS_DIR/}"
+    local rel_no_ext="${rel%.*}"
+    local out="$INITRD_FS_DIR/$rel_no_ext.ni"
+
+    if [[ "$rel" == "boot/splash.png" ]]; then
+      "$PYTHON3" "$NIMG_TOOL" "$png" "$out" "$SPLASH_NIMG_WIDTH" "$SPLASH_NIMG_HEIGHT"
+    else
+      "$PYTHON3" "$NIMG_TOOL" "$png" "$out"
+    fi
+
+    rm -f "$png"
+  done < <(find "$INITRD_FS_DIR" -type f -iname '*.png' -print0)
+
+  "$PYTHON3" "$INITRD_TOOL" "$INITRD_FS_DIR" "$INITRD_IMG"
+}
+
 build_uefi_image() {
   msg "Creating UEFI FAT image (${UEFI_IMG_MB} MB)"
 
@@ -1122,10 +1205,13 @@ build_uefi_image() {
   "$MMD" -i "$UEFI_IMG" ::/EFI || true
   "$MMD" -i "$UEFI_IMG" ::/EFI/BOOT || true
 
-  "$MCOPY" -i "$UEFI_IMG" "$UEFI_EFI" ::/EFI/BOOT/BOOTX64.EFI
+  # build_initrd
 
-  add_uefi_test_files
+  "$MCOPY" -i "$UEFI_IMG" "$UEFI_EFI" ::/EFI/BOOT/BOOTX64.EFI
+  #"$MCOPY" -o -i "$UEFI_IMG" "$INITRD_IMG" ::/INITRD.NAQ
+
   add_uefi_assets
+  #add_uefi_test_files
 
   if [[ -f "$KERNEL64_BIN" ]]; then
     msg "Copying KERNEL64.BIN into UEFI image"
