@@ -206,6 +206,24 @@ KERNEL64_INITRD_OBJ="$BUILD_DIR/initrd64.o"
 KERNEL64_PROCESS_C="$KERNEL64_DIR/proc/process64.c"
 KERNEL64_PROCESS_OBJ="$BUILD_DIR/process64.o"
 
+KERNEL64_USERMODE_C="$KERNEL64_DIR/arch/x86_64/usermode64.c"
+KERNEL64_USERMODE_ASM="$KERNEL64_DIR/arch/x86_64/usermode64.asm"
+
+KERNEL64_USERMODE_OBJ="$BUILD_DIR/usermode64.o"
+KERNEL64_USERMODE_ASM_OBJ="$BUILD_DIR/usermode64_asm.o"
+
+KERNEL64_SYSCALL_C="$KERNEL64_DIR/arch/x86_64/syscall64.c"
+KERNEL64_SYSCALL_ASM="$KERNEL64_DIR/arch/x86_64/syscall64.asm"
+
+KERNEL64_SYSCALL_OBJ="$BUILD_DIR/syscall64.o"
+KERNEL64_SYSCALL_ASM_OBJ="$BUILD_DIR/syscall64_asm.o"
+
+KERNEL64_USERCOPY_C="$KERNEL64_DIR/mm/usercopy64.c"
+KERNEL64_USERCOPY_OBJ="$BUILD_DIR/usercopy64.o"
+
+KERNEL64_ELF_C="$KERNEL64_DIR/exec/elf64.c"
+KERNEL64_ELF_OBJ="$BUILD_DIR/elf64.o"
+
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 VBOX_VM_NAME="${VBOX_VM_NAME:-NAQ OS}"
 VBOX_VDI="$BUILD_DIR/naqos.vdi"
@@ -214,6 +232,10 @@ ASSETS_FS_DIR="${ASSETS_FS_DIR:-assets/fs}"
 ASSETS_BUILD_DIR="$BUILD_DIR/assets_fs"
 NIMG_TOOL="${NIMG_TOOL:-tools/make_nimg.py}"
 COPY_ASSETS_TO_UEFI="${COPY_ASSETS_TO_UEFI:-0}"
+
+USERAPPS_DIR="${USERAPPS_DIR:-userapps}"
+USERAPPS_BUILD_DIR="$BUILD_DIR/userapps"
+USERAPP_LINKER="$USERAPPS_DIR/userapp.ld"
 
 INITRD_TOOL="${INITRD_TOOL:-tools/make_initrd.py}"
 INITRD_IMG="$BUILD_DIR/INITRD.NAQ"
@@ -663,7 +685,7 @@ build_kernel64() {
     -c "$KERNEL64_KMEM_C" \
     -o "$KERNEL64_KMEM_OBJ"
 
-      msg "Building 64-bit GDT assembly"
+  msg "Building 64-bit GDT assembly"
   "$NASM" -f elf64 "$KERNEL64_GDT_ASM" -o "$KERNEL64_GDT_ASM_OBJ"
 
   msg "Compiling 64-bit GDT/TSS"
@@ -896,6 +918,82 @@ build_kernel64() {
     -c "$KERNEL64_PROCESS_C" \
     -o "$KERNEL64_PROCESS_OBJ"
 
+  msg "Compiling 64-bit usermode support"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_USERMODE_C" \
+    -o "$KERNEL64_USERMODE_OBJ"
+
+  msg "Assembling 64-bit usermode entry"
+  "$NASM" \
+    -f elf64 \
+    "$KERNEL64_USERMODE_ASM" \
+    -o "$KERNEL64_USERMODE_ASM_OBJ"
+
+  msg "Compiling 64-bit syscall support"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_SYSCALL_C" \
+    -o "$KERNEL64_SYSCALL_OBJ"
+
+  msg "Assembling 64-bit syscall stub"
+  "$NASM" \
+    -f elf64 \
+    "$KERNEL64_SYSCALL_ASM" \
+    -o "$KERNEL64_SYSCALL_ASM_OBJ"
+
+  msg "Compiling 64-bit usercopy"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_USERCOPY_C" \
+    -o "$KERNEL64_USERCOPY_OBJ"
+
+  msg "Compiling 64-bit ELF loader"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_ELF_C" \
+    -o "$KERNEL64_ELF_OBJ"
+
   msg "Linking 64-bit kernel ELF"
   "$LD" \
     -m elf_x86_64 \
@@ -925,7 +1023,13 @@ build_kernel64() {
     "$KERNEL64_IMAGE_OBJ" \
     "$KERNEL64_INITRD_OBJ" \
     "$KERNEL64_CONTEXT_SWITCH_OBJ" \
-    "$KERNEL64_PROCESS_OBJ"
+    "$KERNEL64_PROCESS_OBJ" \
+    "$KERNEL64_USERMODE_OBJ" \
+    "$KERNEL64_USERMODE_ASM_OBJ" \
+    "$KERNEL64_SYSCALL_OBJ" \
+    "$KERNEL64_SYSCALL_ASM_OBJ" \
+    "$KERNEL64_USERCOPY_OBJ" \
+    "$KERNEL64_ELF_OBJ"
 
   msg "Converting 64-bit kernel ELF to flat binary"
   "$OBJCOPY" -O binary "$KERNEL64_ELF" "$KERNEL64_BIN"
@@ -978,6 +1082,62 @@ build_apps() {
 
   if [[ "$found_any" -eq 0 ]]; then
     msg "No app source files found in $APP_DIR"
+  fi
+}
+
+build_userapps() {
+  msg "Building 64-bit ELF user apps"
+
+  mkdir -p "$USERAPPS_BUILD_DIR"
+
+  if [[ ! -d "$USERAPPS_DIR" ]]; then
+    echo "No userapps directory found at $USERAPPS_DIR; skipping."
+    return 0
+  fi
+
+  if [[ ! -f "$USERAPP_LINKER" ]]; then
+    echo "Missing user app linker script: $USERAPP_LINKER" >&2
+    return 1
+  fi
+
+  local found=0
+
+  while IFS= read -r -d '' src; do
+    found=1
+
+    local base
+    local name_upper
+    local out
+
+    base="$(basename "$src" .S)"
+    name_upper="$(printf '%s' "$base" | tr 'a-z' 'A-Z')"
+    out="$USERAPPS_BUILD_DIR/$name_upper.ELF"
+
+    msg "Building user app $name_upper.ELF"
+
+    "$GCC" \
+      -m64 \
+      -I"$USERAPPS_DIR" \
+      -I"$USERAPPS_DIR/include" \
+      -ffreestanding \
+      -fno-pie \
+      -fno-stack-protector \
+      -mno-red-zone \
+      -nostdlib \
+      -static \
+      -Wl,-T,"$USERAPP_LINKER" \
+      "$src" \
+      -o "$out"
+
+    "$OBJCOPY" \
+      --strip-debug \
+      "$out" \
+      "$out"
+
+  done < <(find "$USERAPPS_DIR" -maxdepth 1 -type f -name '*.S' -print0)
+
+  if [[ "$found" == "0" ]]; then
+    echo "No user app .S files found in $USERAPPS_DIR."
   fi
 }
 
@@ -1176,6 +1336,14 @@ build_initrd() {
     cp -a "$ASSETS_FS_DIR"/. "$INITRD_FS_DIR"/
   fi
 
+  mkdir -p "$INITRD_FS_DIR/apps"
+
+  if [[ -d "$USERAPPS_BUILD_DIR" ]]; then
+    while IFS= read -r -d '' app; do
+      cp "$app" "$INITRD_FS_DIR/apps/$(basename "$app")"
+    done < <(find "$USERAPPS_BUILD_DIR" -maxdepth 1 -type f -name '*.ELF' -print0)
+  fi
+
   # Convert PNG assets in the initrd copy to .ni and remove the PNG.
   while IFS= read -r -d '' png; do
     local rel="${png#$INITRD_FS_DIR/}"
@@ -1205,10 +1373,19 @@ build_uefi_image() {
   "$MMD" -i "$UEFI_IMG" ::/EFI || true
   "$MMD" -i "$UEFI_IMG" ::/EFI/BOOT || true
 
-  # build_initrd
+  build_userapps
+  build_initrd
 
   "$MCOPY" -i "$UEFI_IMG" "$UEFI_EFI" ::/EFI/BOOT/BOOTX64.EFI
-  #"$MCOPY" -o -i "$UEFI_IMG" "$INITRD_IMG" ::/INITRD.NAQ
+  "$MCOPY" -o -i "$UEFI_IMG" "$INITRD_IMG" ::/INITRD.NAQ
+
+  "$MMD" -i "$UEFI_IMG" ::/apps 2>/dev/null || true
+
+  if [[ -d "$USERAPPS_BUILD_DIR" ]]; then
+    while IFS= read -r -d '' app; do
+      "$MCOPY" -o -i "$UEFI_IMG" "$app" "::/apps/$(basename "$app")"
+    done < <(find "$USERAPPS_BUILD_DIR" -maxdepth 1 -type f -name '*.ELF' -print0)
+  fi
 
   add_uefi_assets
   #add_uefi_test_files

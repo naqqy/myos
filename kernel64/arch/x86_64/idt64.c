@@ -1,10 +1,12 @@
 #include "idt64.h"
 #include "gdt64.h"
 #include "../../k64_console.h"
+#include "syscall64.h"
 
 #define IDT64_ENTRIES 256
 
 #define IDT_TYPE_INTERRUPT_GATE 0x8E
+#define IDT_TYPE_USER_INTERRUPT_GATE 0xEE
 
 typedef struct idt64_entry {
     nq_u16 offset_low;
@@ -29,6 +31,8 @@ static idt64_ptr_t idt64_ptr;
 
 extern void irq64_stub_0(void);
 extern void irq64_stub_1(void);
+
+extern void syscall64_stub(void);
 
 static const char* exception_names64[32] = {
     "#DE Divide Error",
@@ -146,6 +150,18 @@ void idt64_init(void) {
     idt_load64(&idt64_ptr);
 
     k64_print("IDT64 loaded.\n");
+}
+
+void idt64_install_syscall_gate(void) {
+    idt64_set_gate(
+        SYSCALL64_VECTOR,
+        (nq_u64)syscall64_stub,
+        GDT64_KERNEL_CODE,
+        0,
+        IDT_TYPE_USER_INTERRUPT_GATE
+    );
+
+    k64_print("IDT64 syscall gate installed.\n");
 }
 
 void exception_handler64(interrupt_frame64_t* frame) {

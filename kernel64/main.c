@@ -78,6 +78,9 @@ void kmain64(naq_boot_info_t* boot) {
     gdt64_init(boot);
     idt64_init();
 
+    idt64_install_syscall_gate();
+    syscall64_init();
+
     memmap64_init(boot);
     k64_print("UEFI memory map parsed.\n");
 //    memmap64_print_summary();

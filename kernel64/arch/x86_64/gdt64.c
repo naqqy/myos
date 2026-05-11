@@ -8,9 +8,32 @@
 #define GDT64_ACCESS_TSS         0x89
 
 #define GDT64_FLAG_LONG_MODE     0x20
-#define GDT64_FLAG_GRANULARITY   0x80
 
-#define GDT64_IST_STACK_SIZE     16384u
+/*
+ * GDT selector layout:
+ *
+ *   0x00 null
+ *   0x08 kernel code
+ *   0x10 kernel data
+ *   0x18 user data
+ *   0x20 user code
+ *   0x28 TSS
+ *
+ * Ring 3 selectors need RPL=3:
+ *
+ *   user data = 0x18 | 3 = 0x1B
+ *   user code = 0x20 | 3 = 0x23
+ */
+#define GDT64_KERNEL_CODE     0x08
+#define GDT64_KERNEL_DATA     0x10
+#define GDT64_USER_DATA       0x18
+#define GDT64_USER_CODE       0x20
+#define GDT64_TSS             0x28
+
+#define GDT64_USER_DATA_SEL   (GDT64_USER_DATA | 3)
+#define GDT64_USER_CODE_SEL   (GDT64_USER_CODE | 3)
+
+#define GDT64_IST_STACK_SIZE  16384u
 
 typedef struct gdt64_tss {
     nq_u32 reserved0;
@@ -47,10 +70,13 @@ typedef struct gdt64_tss_desc {
 
 typedef struct gdt64_table {
     nq_u64 null_desc;
+
     nq_u64 kernel_code;
     nq_u64 kernel_data;
+
     nq_u64 user_data;
     nq_u64 user_code;
+
     gdt64_tss_desc_t tss_desc;
 } __attribute__((packed)) gdt64_table_t;
 
@@ -72,12 +98,25 @@ static nq_u8 pf_stack[GDT64_IST_STACK_SIZE] __attribute__((aligned(16)));
 static void mem_zero(void* ptr, nq_u64 size) {
     nq_u8* p = (nq_u8*)ptr;
 
+    if (!p) {
+        return;
+    }
+
     for (nq_u64 i = 0; i < size; i++) {
         p[i] = 0;
     }
 }
 
-static nq_u64 make_descriptor(nq_u32 base, nq_u32 limit, nq_u8 access, nq_u8 flags) {
+static nq_u64 align_down64(nq_u64 value, nq_u64 align) {
+    return value & ~(align - 1u);
+}
+
+static nq_u64 make_descriptor(
+    nq_u32 base,
+    nq_u32 limit,
+    nq_u8 access,
+    nq_u8 flags
+) {
     nq_u64 desc = 0;
 
     desc |= (nq_u64)(limit & 0xFFFFu);
@@ -90,7 +129,11 @@ static nq_u64 make_descriptor(nq_u32 base, nq_u32 limit, nq_u8 access, nq_u8 fla
     return desc;
 }
 
-static void set_tss_descriptor(gdt64_tss_desc_t* desc, nq_u64 base, nq_u32 limit) {
+static void set_tss_descriptor(
+    gdt64_tss_desc_t* desc,
+    nq_u64 base,
+    nq_u32 limit
+) {
     desc->limit_low = (nq_u16)(limit & 0xFFFFu);
     desc->base_low = (nq_u16)(base & 0xFFFFu);
     desc->base_mid1 = (nq_u8)((base >> 16) & 0xFFu);
@@ -101,34 +144,94 @@ static void set_tss_descriptor(gdt64_tss_desc_t* desc, nq_u64 base, nq_u32 limit
     desc->reserved = 0;
 }
 
+nq_u16 gdt64_kernel_code_selector(void) {
+    return GDT64_KERNEL_CODE;
+}
+
+nq_u16 gdt64_kernel_data_selector(void) {
+    return GDT64_KERNEL_DATA;
+}
+
+nq_u16 gdt64_user_code_selector(void) {
+    return GDT64_USER_CODE_SEL;
+}
+
+nq_u16 gdt64_user_data_selector(void) {
+    return GDT64_USER_DATA_SEL;
+}
+
+nq_u16 gdt64_tss_selector(void) {
+    return GDT64_TSS;
+}
+
 void gdt64_init(const naq_boot_info_t* boot) {
     mem_zero(&gdt64, sizeof(gdt64));
     mem_zero(&gdt64_ptr, sizeof(gdt64_ptr));
     mem_zero(&tss64, sizeof(tss64));
 
+    /*
+     * Long mode mostly ignores base/limit for code/data segments,
+     * but descriptors still need valid access flags and DPL.
+     */
     gdt64.null_desc = 0;
 
     gdt64.kernel_code =
-        make_descriptor(0, 0, GDT64_ACCESS_KERNEL_CODE, GDT64_FLAG_LONG_MODE);
+        make_descriptor(
+            0,
+            0,
+            GDT64_ACCESS_KERNEL_CODE,
+            GDT64_FLAG_LONG_MODE
+        );
 
     gdt64.kernel_data =
-        make_descriptor(0, 0, GDT64_ACCESS_KERNEL_DATA, 0);
+        make_descriptor(
+            0,
+            0,
+            GDT64_ACCESS_KERNEL_DATA,
+            0
+        );
 
     gdt64.user_data =
-        make_descriptor(0, 0, GDT64_ACCESS_USER_DATA, 0);
+        make_descriptor(
+            0,
+            0,
+            GDT64_ACCESS_USER_DATA,
+            0
+        );
 
     gdt64.user_code =
-        make_descriptor(0, 0, GDT64_ACCESS_USER_CODE, GDT64_FLAG_LONG_MODE);
+        make_descriptor(
+            0,
+            0,
+            GDT64_ACCESS_USER_CODE,
+            GDT64_FLAG_LONG_MODE
+        );
 
+    /*
+     * RSP0 is the kernel stack used by the CPU when an interrupt,
+     * exception, or syscall-like path transitions from CPL3 to CPL0.
+     */
     if (boot && boot->magic == NAQ_BOOT_INFO_MAGIC) {
         tss64.rsp0 = boot->stack_top;
     }
 
-    tss64.ist1 = (nq_u64)(df_stack + sizeof(df_stack));
-    tss64.ist2 = (nq_u64)(pf_stack + sizeof(pf_stack));
+    /*
+     * IST stacks:
+     *
+     *   IST1: double fault
+     *   IST2: page fault
+     *
+     * Stack grows downward, so store the top.
+     */
+    tss64.ist1 =
+        align_down64((nq_u64)(df_stack + sizeof(df_stack)), 16);
+
+    tss64.ist2 =
+        align_down64((nq_u64)(pf_stack + sizeof(pf_stack)), 16);
 
     /*
-     * No I/O bitmap for now.
+     * No I/O permission bitmap.
+     * Setting iomap_base >= sizeof(TSS) disables it.
      */
     tss64.iomap_base = sizeof(tss64);
 
@@ -145,4 +248,9 @@ void gdt64_init(const naq_boot_info_t* boot) {
     tss64_load(GDT64_TSS);
 
     k64_print("GDT64/TSS64 loaded.\n");
+    k64_print("User selectors: code=");
+    k64_print_hex64(GDT64_USER_CODE_SEL);
+    k64_print(" data=");
+    k64_print_hex64(GDT64_USER_DATA_SEL);
+    k64_print("\n");
 }

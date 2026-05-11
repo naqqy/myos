@@ -57,6 +57,8 @@ typedef struct irq_frame64 {
 void idt64_init(void);
 void idt64_install_irq_gates(void);
 
+void idt64_install_syscall_gate(void);
+
 void exception_handler64(interrupt_frame64_t* frame);
 
 #endif

@@ -30,71 +30,208 @@ vfs64_mount_root()
 
 13 Port terminal sessions/history. // DONE
 
-14 Add FAT32 write support: // DONE
+14 Add FAT32 write support: // DONE POC
 mkdir
 rm
 rmdir
 write file
 
-15 Add shell write commands: // DONE
+15 Add shell write commands: // DONE POC
 mkdir <path>
 rm <path>
 rmdir <path>
 echo "TEXT" >> <path>
 
-16 Add context_switch64.asm. // DONE
+16 Add UEFI INITRD preload support. // DONE
+INITRD.NAQ loaded by BOOTX64.EFI
+initrd_base/initrd_size passed through naq_boot_info_t
+assets packed into INITRD for real-hardware USB testing
 
-17 Add kernel-only process64 task system. // DONE
+17 Add INITRD64 filesystem backend. // DONE
+initrd64_init()
+initrd64_read_file()
+initrd64_list_path()
 
-18 Add basic cooperative kernel-task scheduler. // DONE
+18 Add real hardware USB boot smoke test. // DONE
+BOOTX64.EFI
+KERNEL64.BIN
+INITRD.NAQ
 
-19 Add timer preemption for kernel tasks. // DONE
+19 Add context_switch64.asm. // DONE
 
-20 Add shell process commands: // TODO
+20 Add kernel-only process64 task system. // DONE
+
+21 Add basic cooperative kernel-task scheduler. // DONE
+
+22 Add timer preemption for kernel tasks. // DONE
+
+23 Add shell process/scheduler commands: // DONE
 ps
 sched
 schedstat
 preempton
 preemptoff
+busytest
+proctest
 
-21 Add user-mode entry path with iretq. // TODO
+24 Add user-mode entry path with iretq. // DONE
 
-22 Add syscall64 ABI. // TODO
+25 Add syscall64 ABI. // DONE
+int 0x80
+SYS_WRITE
+SYS_EXIT POC
+SYS_GET_TICKS
 
-23 Add usercopy64. // TODO
+26 Add usercopy64. // DONE POC
+usercopy64_check_read()
+usercopy64_copy_from_user()
+usercopy64_copy_to_user()
+usercopy64_strnlen_user()
 
-24 Add ELF64 app loader. // TODO
+27 Add ELF64 app loader. // DONE POC
+ET_EXEC-only
+PT_LOAD support
+fixed user app range
+ring 3 entry
+syscall output from ELF app
 
-25 Update app build system for 64-bit ELF apps. // TODO
+28 Update app build system for 64-bit ELF apps. // DONE
 
-26 Add shell app commands: // TODO
+29 Add shell app commands: // TODO
 run <file>
 spawn <file>
 kill <pid>
 
-27 Add process terminal support: // TODO
+30 Integrate ELF apps with process64. // TODO
+run app as a task/process
+track app PID
+support SYS_EXIT properly
+
+31 Add process terminal support: // TODO
 fg <pid>
 view <pid>
 private app terminals
 
-28 Replace temporary early identity heap/paging assumptions with cleaner virtual memory layout. // TODO
+32 Replace temporary early identity heap/paging assumptions with cleaner virtual memory layout. // TODO
 
-29 Reclaim UEFI BootServices memory safely after own page tables are active. // TODO
+33 Reclaim UEFI BootServices memory safely after own page tables are active. // TODO
 
-30 Improve page-table allocation to use PMM-backed pages after mappings are stable. // TODO
+34 Improve page-table allocation to use PMM-backed pages after mappings are stable. // TODO
 
-31 Add proper double-fault/page-fault IST testing. // TODO
+35 Add proper double-fault/page-fault IST testing. // TODO
 
-32 Improve image64 to allocate large image buffers dynamically. // TODO
+36 Improve image64 to allocate large image buffers dynamically. // TODO
 
-33 Add automatic boot splash before shell starts. // TODO
+37 Add automatic boot splash before shell starts. // TODO
 
-34 Add aspect-ratio preserving PNG conversion. // TODO
+38 Add aspect-ratio preserving PNG conversion. // TODO
 
-35 Move large static buffers to kmalloc64. // TODO
+39 Move large static buffers to kmalloc64. // TODO
+shell file buffer
+shell image buffer
+terminal session buffers
+ELF load buffer
+FAT buffers if needed
+
+40 Harden FAT32 write/free-chain logic. // TODO
+checked cluster-chain freeing
+better FAT corruption guards
+safe overwrite behavior
+
+41 Add proper VFS directory entry API. // TODO
+vfs64_dirent_t
+backend-independent ls
+cleaner LFN handling
+
+42 Add stronger user memory model. // TODO
+separate user virtual range
+per-process page tables
+real user stack allocation/mapping
+remove user access from kernel pages
+
+43 Add syscall table expansion. // TODO
+read
+write
+open
+close
+exit
+yield
+getpid
+sleep
+
+44 Add app loader improvements. // TODO
+argv/envp
+multiple ELF segments with permissions
+better validation
+non-looping app return path
+
+45 Flesh out FAT32 write POC. // TODO
+replace whole-file append rewrite with real append/write offsets
+re-enable old cluster-chain freeing safely
+checked cluster-chain walking
+update FSInfo free cluster count if used
+add timestamps later
+add LFN creation later
+
+46 Flesh out INITRD POC. // TODO
+cleaner directory listing
+directory entries instead of flat path listing
+optional compression later
+optional module metadata later
+
+47 Flesh out scheduler/process64 POC. // TODO
+real task cleanup/reaping
+free task stacks
+task sleep/block states
+safe console locking across tasks
+timer-preempt-safe scheduler path
+per-task terminal/session pointer
+per-task kernel stack ownership
+
+48 Flesh out usermode64 POC. // TODO
+stop marking kernel pages user-accessible
+move test user code into real user pages
+create real user stacks from mapped pages
+validate CPL3 exceptions return through TSS/RSP0
+separate kernel/user memory permissions
+
+49 Flesh out syscall64 POC. // TODO
+proper syscall dispatch table
+return negative error codes
+SYS_EXIT should terminate current process
+SYS_WRITE should write to process terminal/stdout
+add getpid/yield/sleep/read/open/close later
+validate syscall args consistently
+
+50 Flesh out usercopy64 POC. // TODO
+check writable pages separately from readable pages
+copy fault recovery instead of precheck-only
+support crossing page boundaries safely
+reject kernel pointers from user mode
+integrate with per-process page tables
+
+51 Flesh out ELF64 loader POC. // TODO
+integrate ELF execution with process64
+do not jump directly from shell forever
+free app memory on exit
+support argv/envp
+load multiple apps without overwriting fixed region
+map PT_LOAD segments with correct permissions
+support PIE/relocations later if needed
+
+52 Flesh out VFS POC. // TODO
+backend-independent vfs64_dirent_t
+mount table instead of one root backend
+support fallback/overlay between FAT32 and INITRD
+normalize all paths consistently
+clean permission/read-only errors
+
+Later: add USB HID keyboard support. // TODO
+
+Later: add USB mass storage backend under block64. // TODO
 
 Later: add AHCI/SATA backend under block64. // TODO
 
-Later: add USB mass storage backend under block64. // TODO
+Later: add NVMe backend under block64. // TODO
 
 Later: add ext4 read-only behind the same VFS/block layer. // TODO

@@ -10,6 +10,14 @@
 #define PAGING64_STATIC_TABLE_PAGES 64u
 #define PAGING64_STATIC_TABLE_BYTES (PAGING64_STATIC_TABLE_PAGES * PAGE64_SIZE_4K)
 
+#define PAGE64_PRESENT  0x001ull
+#define PAGE64_RW       0x002ull
+#define PAGE64_USER     0x004ull
+#define PAGE64_PS       0x080ull
+
+#define PAGE64_ADDR_MASK 0x000FFFFFFFFFF000ull
+#define PAGE64_2M_SIZE   0x200000ull
+
 static nq_u64* g_pml4 = 0;
 static nq_u64  g_pml4_phys = 0;
 
@@ -305,6 +313,159 @@ nq_u64 paging64_mapped_2m_pages(void) {
 
 nq_u64 paging64_table_pages(void) {
     return g_table_pages;
+}
+
+static nq_u64* paging64_table_from_entry(nq_u64 entry) {
+    return (nq_u64*)(entry & PAGE64_ADDR_MASK);
+}
+
+int paging64_mark_user_range(nq_u64 virt_addr, nq_u64 size) {
+    if (!g_pml4 || size == 0) {
+        return 0;
+    }
+
+    nq_u64 start = virt_addr & ~(PAGE64_2M_SIZE - 1ull);
+    nq_u64 end = virt_addr + size;
+
+    if (end < virt_addr) {
+        return 0;
+    }
+
+    end = (end + PAGE64_2M_SIZE - 1ull) & ~(PAGE64_2M_SIZE - 1ull);
+
+    for (nq_u64 addr = start; addr < end; addr += PAGE64_2M_SIZE) {
+        nq_u64 pml4_i = (addr >> 39) & 0x1FFull;
+        nq_u64 pdpt_i = (addr >> 30) & 0x1FFull;
+        nq_u64 pd_i   = (addr >> 21) & 0x1FFull;
+
+        nq_u64* pml4 = g_pml4;
+
+        if (!(pml4[pml4_i] & PAGE64_PRESENT)) {
+            return 0;
+        }
+
+        nq_u64* pdpt = paging64_table_from_entry(pml4[pml4_i]);
+
+        if (!(pdpt[pdpt_i] & PAGE64_PRESENT)) {
+            return 0;
+        }
+
+        nq_u64* pd = paging64_table_from_entry(pdpt[pdpt_i]);
+
+        if (!(pd[pd_i] & PAGE64_PRESENT)) {
+            return 0;
+        }
+
+        if (!(pd[pd_i] & PAGE64_PS)) {
+            return 0;
+        }
+
+        /*
+         * User access requires USER bit on every paging level.
+         */
+        pml4[pml4_i] |= PAGE64_USER;
+        pdpt[pdpt_i] |= PAGE64_USER;
+        pd[pd_i]     |= PAGE64_USER | PAGE64_RW;
+    }
+
+    /*
+     * Flush TLB.
+     */
+    __asm__ volatile (
+        "mov %%cr3, %%rax\n"
+        "mov %%rax, %%cr3\n"
+        :
+        :
+        : "rax", "memory"
+    );
+
+    return 1;
+}
+
+static nq_u64* paging64_table_from_entry_checked(nq_u64 entry) {
+    return (nq_u64*)(entry & PAGE64_ADDR_MASK);
+}
+
+static int paging64_user_addr_accessible(nq_u64 addr) {
+    if (!g_pml4) {
+        return 0;
+    }
+
+    nq_u64 pml4_i = (addr >> 39) & 0x1FFull;
+    nq_u64 pdpt_i = (addr >> 30) & 0x1FFull;
+    nq_u64 pd_i   = (addr >> 21) & 0x1FFull;
+
+    nq_u64 pml4e = g_pml4[pml4_i];
+
+    if (!(pml4e & PAGE64_PRESENT) || !(pml4e & PAGE64_USER)) {
+        return 0;
+    }
+
+    nq_u64* pdpt = paging64_table_from_entry_checked(pml4e);
+    nq_u64 pdpte = pdpt[pdpt_i];
+
+    if (!(pdpte & PAGE64_PRESENT) || !(pdpte & PAGE64_USER)) {
+        return 0;
+    }
+
+    nq_u64* pd = paging64_table_from_entry_checked(pdpte);
+    nq_u64 pde = pd[pd_i];
+
+    if (!(pde & PAGE64_PRESENT) || !(pde & PAGE64_USER)) {
+        return 0;
+    }
+
+    /*
+     * Current paging64 uses 2 MiB pages.
+     * If this is not a 2 MiB page, reject for now.
+     */
+    if (!(pde & PAGE64_PS)) {
+        return 0;
+    }
+
+    return 1;
+}
+
+int paging64_user_range_accessible(nq_u64 virt_addr, nq_u64 size) {
+    if (size == 0) {
+        return 1;
+    }
+
+    if (virt_addr == 0) {
+        return 0;
+    }
+
+    /*
+     * Overflow check.
+     */
+    nq_u64 end = virt_addr + size - 1u;
+
+    if (end < virt_addr) {
+        return 0;
+    }
+
+    /*
+     * Check first and last byte, then each crossed 2 MiB boundary.
+     */
+    if (!paging64_user_addr_accessible(virt_addr)) {
+        return 0;
+    }
+
+    if (!paging64_user_addr_accessible(end)) {
+        return 0;
+    }
+
+    nq_u64 page = (virt_addr & ~(PAGE64_2M_SIZE - 1ull)) + PAGE64_2M_SIZE;
+
+    while (page < end) {
+        if (!paging64_user_addr_accessible(page)) {
+            return 0;
+        }
+
+        page += PAGE64_2M_SIZE;
+    }
+
+    return 1;
 }
 
 void paging64_print_summary(void) {

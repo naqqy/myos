@@ -5,6 +5,7 @@
 
 #include "../arch/x86_64/power64.h"
 #include "../arch/x86_64/timer64.h"
+#include "../arch/x86_64/usermode64.h"
 
 #include "../mm/memmap64.h"
 #include "../mm/pmm64.h"
@@ -21,6 +22,8 @@
 #include "../console/terminal64.h"
 
 #include "../proc/process64.h"
+
+#include "../exec/elf64.h"
 
 #define SHELL64_INPUT_MAX 128
 #define SHELL64_FILE_BUFFER_SIZE 65536u
@@ -255,10 +258,13 @@ static void shell64_print_help(void) {
     k64_print("  term          - show terminal/session info\n");
     k64_print("  ps            - show kernel tasks\n");
     k64_print("  proctest      - create two cooperative test tasks\n");
-    k64_print("  preempton     - enable timer preemption\n");
-    k64_print("  preemptoff    - disable timer preemption\n");
-    k64_print("  schedstat     - show scheduler status\n");
+    k64_print("  sched         - show scheduler status\n");
+    k64_print("  sched on      - enable timer preemption\n");
+    k64_print("  sched off     - disable timer preemption\n");
+    k64_print("  sched stat    - show scheduler status\n");
     k64_print("  busytest      - create CPU-bound preemption test tasks\n");
+    k64_print("  usertest      - enter ring 3 iretq test\n");
+    k64_print("  runelf <file> - load and enter ELF64 user app\n");
     k64_print("  reboot        - reboot machine\n");
     k64_print("  shutdown      - power off emulator\n");
 }
@@ -298,6 +304,35 @@ static void shell64_draw_nimg(const char* path) {
      * Put the prompt area back into a clean state afterwards.
      */
     k64_print("\n");
+}
+
+static void shell64_sched_command(const char* arg) {
+    arg = skip_spaces(arg);
+
+    if (!arg || !arg[0] || str_eq(arg, "stat")) {
+        process64_print_summary();
+        return;
+    }
+
+    if (str_eq(arg, "on")) {
+        process64_enable_preemption();
+        k64_print("Scheduler timer preemption enabled.\n");
+        process64_print_summary();
+        return;
+    }
+
+    if (str_eq(arg, "off")) {
+        process64_disable_preemption();
+        k64_print("Scheduler timer preemption disabled.\n");
+        process64_print_summary();
+        return;
+    }
+
+    k64_print("Usage:\n");
+    k64_print("  sched\n");
+    k64_print("  sched on\n");
+    k64_print("  sched off\n");
+    k64_print("  sched stat\n");
 }
 
 static void shell64_print_about(void) {
@@ -734,19 +769,26 @@ static void shell64_execute_command(void) {
     else if (str_eq(arg, "proctest")) {
         shell64_start_process_test();
     }
-    else if (str_eq(arg, "preempton")) {
-        process64_enable_preemption();
-        k64_print("Timer preemption enabled.\n");
+    else if (str_eq(arg, "sched")) {
+        shell64_sched_command("");
     }
-    else if (str_eq(arg, "preemptoff")) {
-        process64_disable_preemption();
-        k64_print("Timer preemption disabled.\n");
-    }
-    else if (str_eq(arg, "schedstat")) {
-        process64_print_summary();
+    else if (str_starts_with(arg, "sched ")) {
+        shell64_sched_command(arg + 6);
     }
     else if (str_eq(arg, "busytest")) {
         shell64_start_busy_test();
+    }
+    else if (str_eq(arg, "usertest")) {
+        usermode64_enter_test();
+    }
+    else if (str_starts_with(arg, "runelf ")) {
+        const char* path = skip_spaces(arg + 7);
+
+        if (!path[0]) {
+            k64_print("Usage: runelf <file>\n");
+        } else {
+            elf64_exec_file(path);
+        }
     }
     else if (str_eq(arg, "reboot")) {
         k64_print("Rebooting...\n");
@@ -765,9 +807,6 @@ static void shell64_execute_command(void) {
     }
     else if (str_starts_with(arg, "spawn ")) {
         shell64_not_ready("spawn");
-    }
-    else if (str_eq(arg, "sched") || str_eq(arg, "schedstat")) {
-        shell64_not_ready("scheduler");
     }
     else {
         k64_print("Unknown command: ");

@@ -244,7 +244,11 @@ void vfs64_print_summary(void) {
     }
 
     k64_print("root mounted\n");
-    k64_print("Root backend: FAT32 read-only\n");
+    if (g_vfs_backend == VFS64_BACKEND_FAT32) {
+        k64_print("Root backend: FAT32\n");
+    } else if (g_vfs_backend == VFS64_BACKEND_INITRD) {
+        k64_print("Root backend: INITRD\n");
+    }
     k64_print("Path normalization: enabled\n");
 
     fat32_64_print_summary();
