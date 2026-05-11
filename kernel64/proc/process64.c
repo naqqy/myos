@@ -3,6 +3,8 @@
 #include "../arch/x86_64/context_switch64.h"
 #include "../mm/kmem64.h"
 #include "../k64_console.h"
+#include "../arch/x86_64/gdt64.h"
+#include "../console/terminal64.h"
 
 static process64_task_t g_tasks[PROCESS64_MAX_TASKS];
 static process64_task_t* g_current = 0;
@@ -156,6 +158,10 @@ void process64_init(void) {
 
     str_copy64(g_tasks[0].name, "kernel", sizeof(g_tasks[0].name));
 
+    g_tasks[0].terminal = terminal64_kernel();
+    g_tasks[0].terminal_id = terminal64_id(g_tasks[0].terminal);
+    g_tasks[0].foreground = 1;
+
     g_current = &g_tasks[0];
     g_next_pid = 1;
 
@@ -207,6 +213,15 @@ int process64_create_kernel_task(
     task->entry = entry;
     task->arg = arg;
 
+    task->terminal = terminal64_create();
+
+    if (!task->terminal) {
+        task->terminal = terminal64_kernel();
+    }
+
+    task->terminal_id = terminal64_id(task->terminal);
+    task->foreground = 0;
+
     str_copy64(task->name, name ? name : "task", sizeof(task->name));
 
     task->rsp = process64_build_initial_stack(
@@ -256,6 +271,15 @@ static void process64_switch_to(process64_task_t* next) {
     next->state = PROCESS64_RUNNING;
     g_current = next;
 
+    /*
+     * If this task later enters ring 3, interrupts/syscalls from CPL3
+     * will use TSS.rsp0. That must point to this task's kernel stack,
+     * not the original boot stack.
+     */
+    if (next->stack_base && next->stack_size) {
+        gdt64_set_rsp0(next->stack_base + next->stack_size);
+    }
+
     context_switch64(&prev->rsp, next->rsp);
 }
 
@@ -286,6 +310,44 @@ void process64_exit(void) {
     for (;;) {
         __asm__ volatile ("hlt");
     }
+}
+
+int process64_kill(nq_u32 pid) {
+    for (nq_u32 i = 0; i < PROCESS64_MAX_TASKS; i++) {
+        process64_task_t* task = &g_tasks[i];
+
+        if (task->state == PROCESS64_UNUSED) {
+            continue;
+        }
+
+        if (task->pid != pid) {
+            continue;
+        }
+
+        /*
+         * Do not kill the base kernel/shell task.
+         */
+        if (task == &g_tasks[0]) {
+            return 0;
+        }
+
+        /*
+         * If killing the currently running task, exit cleanly.
+         */
+        if (task == g_current) {
+            process64_exit();
+            return 1;
+        }
+
+        /*
+         * POC kill:
+         * Mark as ZOMBIE. Later task reaping will free stack/memory.
+         */
+        task->state = PROCESS64_ZOMBIE;
+        return 1;
+    }
+
+    return 0;
 }
 
 void process64_enable_preemption(void) {
@@ -349,7 +411,7 @@ void process64_print_summary(void) {
     k64_print_dec64(g_preempt_switches);
     k64_print("\n");
 
-    k64_print("PID   STATE     NAME\n");
+    k64_print("PID   STATE     TERM   FG   NAME\n");
 
     for (nq_u32 i = 0; i < PROCESS64_MAX_TASKS; i++) {
         if (g_tasks[i].state == PROCESS64_UNUSED) {
@@ -362,7 +424,89 @@ void process64_print_summary(void) {
         k64_print(process64_state_name(g_tasks[i].state));
         k64_print("   ");
 
+        k64_print_dec64(g_tasks[i].terminal_id);
+        k64_print("      ");
+
+        k64_print(g_tasks[i].foreground ? "Y" : "N");
+        k64_print("    ");
+
         k64_print(g_tasks[i].name);
         k64_print("\n");
     }
+}
+
+static process64_task_t* process64_find_by_pid(nq_u32 pid) {
+    for (nq_u32 i = 0; i < PROCESS64_MAX_TASKS; i++) {
+        if (g_tasks[i].state == PROCESS64_UNUSED) {
+            continue;
+        }
+
+        if (g_tasks[i].pid == pid) {
+            return &g_tasks[i];
+        }
+    }
+
+    return 0;
+}
+
+terminal64_session_t* process64_terminal(process64_task_t* task) {
+    if (!task || !task->terminal) {
+        return terminal64_kernel();
+    }
+
+    return task->terminal;
+}
+
+terminal64_session_t* process64_current_terminal(void) {
+    return process64_terminal(g_current);
+}
+
+void process64_write_current(const char* s) {
+    terminal64_write(process64_current_terminal(), s);
+}
+
+void process64_write_current_len(const char* s, nq_u64 len) {
+    terminal64_write_len(process64_current_terminal(), s, len);
+}
+
+int process64_view_terminal(nq_u32 pid) {
+    process64_task_t* task;
+
+    if (pid == 0) {
+        terminal64_switch(terminal64_kernel());
+        return 1;
+    }
+
+    task = process64_find_by_pid(pid);
+
+    if (!task || !task->terminal) {
+        return 0;
+    }
+
+    terminal64_switch(task->terminal);
+    return 1;
+}
+
+int process64_foreground(nq_u32 pid) {
+    process64_task_t* task;
+
+    for (nq_u32 i = 0; i < PROCESS64_MAX_TASKS; i++) {
+        g_tasks[i].foreground = 0;
+    }
+
+    if (pid == 0) {
+        g_tasks[0].foreground = 1;
+        terminal64_switch(terminal64_kernel());
+        return 1;
+    }
+
+    task = process64_find_by_pid(pid);
+
+    if (!task || !task->terminal) {
+        return 0;
+    }
+
+    task->foreground = 1;
+    terminal64_switch(task->terminal);
+    return 1;
 }

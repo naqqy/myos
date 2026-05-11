@@ -224,6 +224,9 @@ KERNEL64_USERCOPY_OBJ="$BUILD_DIR/usercopy64.o"
 KERNEL64_ELF_C="$KERNEL64_DIR/exec/elf64.c"
 KERNEL64_ELF_OBJ="$BUILD_DIR/elf64.o"
 
+KERNEL64_VMEM_C="$KERNEL64_DIR/mm/vmem64.c"
+KERNEL64_VMEM_OBJ="$BUILD_DIR/vmem64.o"
+
 VBOXMANAGE="${VBOXMANAGE:-VBoxManage}"
 VBOX_VM_NAME="${VBOX_VM_NAME:-NAQ OS}"
 VBOX_VDI="$BUILD_DIR/naqos.vdi"
@@ -994,6 +997,22 @@ build_kernel64() {
     -c "$KERNEL64_ELF_C" \
     -o "$KERNEL64_ELF_OBJ"
 
+  msg "Compiling 64-bit virtual memory layout"
+  "$GCC" \
+    -m64 \
+    -I. \
+    -Iinclude \
+    -Ikernel64 \
+    -Igraphics \
+    -ffreestanding \
+    -fno-pie \
+    -fno-stack-protector \
+    -mno-red-zone \
+    -mgeneral-regs-only \
+    -nostdlib \
+    -c "$KERNEL64_VMEM_C" \
+    -o "$KERNEL64_VMEM_OBJ"
+
   msg "Linking 64-bit kernel ELF"
   "$LD" \
     -m elf_x86_64 \
@@ -1029,7 +1048,8 @@ build_kernel64() {
     "$KERNEL64_SYSCALL_OBJ" \
     "$KERNEL64_SYSCALL_ASM_OBJ" \
     "$KERNEL64_USERCOPY_OBJ" \
-    "$KERNEL64_ELF_OBJ"
+    "$KERNEL64_ELF_OBJ" \
+    "$KERNEL64_VMEM_OBJ"
 
   msg "Converting 64-bit kernel ELF to flat binary"
   "$OBJCOPY" -O binary "$KERNEL64_ELF" "$KERNEL64_BIN"

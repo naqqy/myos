@@ -164,6 +164,14 @@ nq_u16 gdt64_tss_selector(void) {
     return GDT64_TSS;
 }
 
+void gdt64_set_rsp0(nq_u64 rsp0) {
+    tss64.rsp0 = rsp0;
+}
+
+nq_u64 gdt64_get_rsp0(void) {
+    return tss64.rsp0;
+}
+
 void gdt64_init(const naq_boot_info_t* boot) {
     mem_zero(&gdt64, sizeof(gdt64));
     mem_zero(&gdt64_ptr, sizeof(gdt64_ptr));

@@ -5,6 +5,7 @@
 #include "arch/x86_64/idt64.h"
 #include "arch/x86_64/irq64.h"
 #include "arch/x86_64/timer64.h"
+#include "arch/x86_64/syscall64.h"
 
 #include "mm/memmap64.h"
 #include "mm/pmm64.h"
@@ -162,10 +163,9 @@ void kmain64(naq_boot_info_t* boot) {
 
     shell64_init();
 
-    __asm__ volatile ("sti");
-
     for (;;) {
         shell64_poll();
+        __asm__ volatile ("sti");
         __asm__ volatile ("hlt");
     }
 }

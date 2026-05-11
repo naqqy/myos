@@ -6,7 +6,7 @@
 #define IDT64_ENTRIES 256
 
 #define IDT_TYPE_INTERRUPT_GATE 0x8E
-#define IDT_TYPE_USER_INTERRUPT_GATE 0xEE
+#define IDT_TYPE_USER_TRAP_GATE 0xEF
 
 typedef struct idt64_entry {
     nq_u16 offset_low;
@@ -158,7 +158,7 @@ void idt64_install_syscall_gate(void) {
         (nq_u64)syscall64_stub,
         GDT64_KERNEL_CODE,
         0,
-        IDT_TYPE_USER_INTERRUPT_GATE
+        IDT_TYPE_USER_TRAP_GATE
     );
 
     k64_print("IDT64 syscall gate installed.\n");

@@ -1,6 +1,7 @@
 #include "paging64.h"
 #include "pmm64.h"
 #include "../k64_console.h"
+#include "vmem64.h"
 
 #define PTE_ADDR_MASK_4K 0x000FFFFFFFFFF000ull
 #define PTE_ADDR_MASK_2M 0x000FFFFFFFE00000ull
@@ -16,7 +17,10 @@
 #define PAGE64_PS       0x080ull
 
 #define PAGE64_ADDR_MASK 0x000FFFFFFFFFF000ull
+#define PAGE64_2M_MASK   0x000FFFFFFFE00000ull
 #define PAGE64_2M_SIZE   0x200000ull
+#define PAGE64_NX        0x8000000000000000ull
+
 
 static nq_u64* g_pml4 = 0;
 static nq_u64  g_pml4_phys = 0;
@@ -40,6 +44,14 @@ static nq_u8 paging64_table_pool[PAGING64_STATIC_TABLE_BYTES]
     __attribute__((aligned(4096), section(".data.paging64_pool"))) = { 1 };
 
 static nq_u64 paging64_table_pool_used = 0;
+
+static nq_u64 align_down64_local(nq_u64 value, nq_u64 align) {
+    return value & ~(align - 1ull);
+}
+
+static nq_u64 align_up64_local(nq_u64 value, nq_u64 align) {
+    return (value + align - 1ull) & ~(align - 1ull);
+}
 
 static nq_u64 align_down64(nq_u64 value, nq_u64 align) {
     return value & ~(align - 1ull);
@@ -115,6 +127,120 @@ static nq_u64* alloc_table_page(void) {
     g_table_pages++;
 
     return table;
+}
+
+int paging64_map_2m_range(
+    nq_u64 virt,
+    nq_u64 phys,
+    nq_u64 size,
+    nq_u64 flags
+) {
+    if (!g_pml4 || size == 0) {
+        return 0;
+    }
+
+    nq_u64 virt_start = align_down64_local(virt, PAGE64_2M_SIZE);
+    nq_u64 phys_start = align_down64_local(phys, PAGE64_2M_SIZE);
+    nq_u64 virt_end = align_up64_local(virt + size, PAGE64_2M_SIZE);
+
+    if (virt_end < virt_start) {
+        return 0;
+    }
+
+    for (nq_u64 va = virt_start, pa = phys_start;
+         va < virt_end;
+         va += PAGE64_2M_SIZE, pa += PAGE64_2M_SIZE) {
+        nq_u64 pml4_i = (va >> 39) & 0x1FFull;
+        nq_u64 pdpt_i = (va >> 30) & 0x1FFull;
+        nq_u64 pd_i   = (va >> 21) & 0x1FFull;
+
+        nq_u64* pdpt;
+        nq_u64* pd;
+
+        if (!(g_pml4[pml4_i] & PAGE64_PRESENT)) {
+            pdpt = alloc_table_page();
+
+            if (!pdpt) {
+                return 0;
+            }
+
+            g_pml4[pml4_i] =
+                ((nq_u64)pdpt & PAGE64_ADDR_MASK) |
+                PAGE64_PRESENT |
+                PAGE64_RW;
+        } else {
+            pdpt = (nq_u64*)(g_pml4[pml4_i] & PAGE64_ADDR_MASK);
+        }
+
+        if (!(pdpt[pdpt_i] & PAGE64_PRESENT)) {
+            pd = alloc_table_page();
+
+            if (!pd) {
+                return 0;
+            }
+
+            pdpt[pdpt_i] =
+                ((nq_u64)pd & PAGE64_ADDR_MASK) |
+                PAGE64_PRESENT |
+                PAGE64_RW;
+        } else {
+            pd = (nq_u64*)(pdpt[pdpt_i] & PAGE64_ADDR_MASK);
+        }
+
+        /*
+         * If mapping user pages, USER must exist on every level.
+         */
+        if (flags & PAGE64_USER) {
+            g_pml4[pml4_i] |= PAGE64_USER;
+            pdpt[pdpt_i]   |= PAGE64_USER;
+        }
+
+        pd[pd_i] =
+            (pa & PAGE64_2M_MASK) |
+            PAGE64_PRESENT |
+            PAGE64_PS |
+            flags;
+    }
+
+    __asm__ volatile (
+        "mov %%cr3, %%rax\n"
+        "mov %%rax, %%cr3\n"
+        :
+        :
+        : "rax", "memory"
+    );
+
+    return 1;
+}
+
+int paging64_map_direct_range(nq_u64 phys_start, nq_u64 size) {
+    nq_u64 phys = align_down64_local(phys_start, PAGE64_2M_SIZE);
+    nq_u64 end = align_up64_local(phys_start + size, PAGE64_2M_SIZE);
+
+    if (end < phys) {
+        return 0;
+    }
+
+    if ((end - phys) > VMEM64_DIRECT_MAP_SIZE) {
+        k64_print("paging64: direct map range too large\n");
+        return 0;
+    }
+
+    return paging64_map_2m_range(
+        VMEM64_DIRECT_MAP_BASE + phys,
+        phys,
+        end - phys,
+        PAGE64_RW
+    );
+}
+
+void paging64_print_layout(void) {
+    k64_print("Paging64:\n");
+
+    k64_print("  2MiB identity map: enabled temporary\n");
+    k64_print("  direct map base: ");
+    k64_print_hex64(VMEM64_DIRECT_MAP_BASE);
+    k64_print("\n");
 }
 
 static nq_u64* get_or_create_next_table(nq_u64* table, nq_u64 index) {
@@ -297,6 +423,18 @@ int paging64_init(const naq_boot_info_t* boot) {
     if (!map_boot_critical_regions(boot)) {
         return 0;
     }
+
+    /*
+    * Phase 1 cleaner VM:
+    * Keep identity map for compatibility, but also map a higher-half
+    * direct map so new code can stop treating physical addresses as pointers.
+    */
+    if (!paging64_map_direct_range(0, VMEM64_DIRECT_MAP_SIZE)) {
+        k64_print("paging64: direct map failed\n");
+        return 0;
+    }
+
+    k64_print("paging64: direct map enabled\n");
 
     write_cr3(g_pml4_phys);
 

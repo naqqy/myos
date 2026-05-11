@@ -292,6 +292,34 @@ static void terminal64_put_char_internal(terminal64_session_t* t, char c) {
     }
 }
 
+void terminal64_put_char(terminal64_session_t* t, char c) {
+    terminal64_put_char_internal(t, c);
+}
+
+void terminal64_write(terminal64_session_t* t, const char* s) {
+    if (!t || !s) {
+        return;
+    }
+
+    while (*s) {
+        terminal64_put_char_internal(t, *s++);
+    }
+}
+
+void terminal64_write_len(terminal64_session_t* t, const char* s, nq_u64 len) {
+    if (!t || !s) {
+        return;
+    }
+
+    for (nq_u64 i = 0; i < len; i++) {
+        terminal64_put_char_internal(t, s[i]);
+    }
+}
+
+nq_u32 terminal64_id(terminal64_session_t* t) {
+    return t ? t->id : 0;
+}
+
 static void terminal64_backspace_internal(terminal64_session_t* t) {
     if (!t) {
         return;

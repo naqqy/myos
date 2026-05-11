@@ -1,6 +1,7 @@
 #include "kmem64.h"
 #include "pmm64.h"
 #include "../k64_console.h"
+#include "vmem64.h"
 
 #define KMEM64_ALIGN 16ull
 #define KMEM64_MIN_EXPAND_PAGES 4ull
@@ -134,10 +135,13 @@ static int kmem64_expand(nq_u64 min_payload_bytes) {
     nq_u64 bytes = pages * PMM64_FRAME_SIZE;
 
     /*
-     * paging64 identity-maps managed memory, so physical == usable virtual
-     * for this early heap.
-     */
-    kmem64_block_t* block = (kmem64_block_t*)phys;
+    * New model:
+    * PMM returns physical frames.
+    * Kernel accesses them through the higher-half direct map.
+    */
+    kmem64_block_t* block = (kmem64_block_t*)vmem64_phys_to_ptr(phys);
+
+    mem_zero(block, bytes);
 
     k64_print("1");
     mem_zero((void*)phys, bytes);

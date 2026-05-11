@@ -7,5 +7,6 @@
 #define ELF64_USER_STACK_SIZE  (64u * 1024u)
 
 int elf64_exec_file(const char* path);
+int elf64_spawn_file(const char* path);
 
 #endif

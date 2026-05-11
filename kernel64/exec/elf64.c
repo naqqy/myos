@@ -7,6 +7,9 @@
 #include "../arch/x86_64/usermode64.h"
 #include "../k64_console.h"
 
+#include "../arch/x86_64/gdt64.h"
+#include "../proc/process64.h"
+
 #define EI_NIDENT 16
 
 #define EI_MAG0       0
@@ -75,6 +78,32 @@ typedef struct elf64_phdr {
 } __attribute__((packed)) elf64_phdr_t;
 
 static nq_u8 g_elf64_file_buf[ELF64_MAX_IMAGE_SIZE];
+
+#define ELF64_MAX_PATH 128
+
+typedef struct elf64_spawn_arg {
+    char path[ELF64_MAX_PATH];
+} elf64_spawn_arg_t;
+
+static void str_copy64(char* dst, const char* src, nq_u64 dst_size) {
+    nq_u64 i = 0;
+
+    if (!dst || dst_size == 0) {
+        return;
+    }
+
+    if (!src) {
+        dst[0] = 0;
+        return;
+    }
+
+    while (src[i] && i + 1 < dst_size) {
+        dst[i] = src[i];
+        i++;
+    }
+
+    dst[i] = 0;
+}
 
 static void mem_zero64(void* ptr, nq_u64 size) {
     nq_u8* p = (nq_u8*)ptr;
@@ -358,21 +387,79 @@ int elf64_exec_file(const char* path) {
     k64_print_hex64(user_stack_top);
     k64_print("\n");
 
-    /*
-    * POC safety:
-    * Mark the whole fixed ELF user area as user-accessible.
-    * Later, this should become per-segment permissions in per-process page tables.
-    */
-    if (!paging64_mark_user_range(ELF64_USER_MIN_ADDR,
-                                ELF64_USER_MAX_ADDR - ELF64_USER_MIN_ADDR)) {
-        k64_print("elf64: failed to mark full user app region\n");
-        return 0;
+    process64_task_t* current = process64_current();
+
+    if (current && current->stack_base && current->stack_size) {
+        nq_u64 kernel_stack_top = current->stack_base + current->stack_size;
+
+        gdt64_set_rsp0(kernel_stack_top);
+
+        k64_print("elf64: TSS RSP0=");
+        k64_print_hex64(kernel_stack_top);
+        k64_print("\n");
     }
 
-    /*
-     * This does not return unless the app faults.
-     */
     usermode64_enter(eh->e_entry, user_stack_top);
 
     return 1;
+}
+
+static void elf64_process_entry(void* arg) {
+    elf64_spawn_arg_t* spawn_arg = (elf64_spawn_arg_t*)arg;
+
+    if (!spawn_arg || !spawn_arg->path[0]) {
+        k64_print("elf64 task: missing path\n");
+        process64_exit();
+    }
+
+    /*
+     * This enters ring 3 and normally does not return until:
+     *   - app faults, or
+     *   - app calls SYS_EXIT and the syscall path terminates this task.
+     */
+    if (!elf64_exec_file(spawn_arg->path)) {
+        k64_print("elf64 task: exec failed\n");
+        process64_exit();
+    }
+
+    /*
+     * If elf64_exec_file ever returns, end the task.
+     */
+    process64_exit();
+}
+
+int elf64_spawn_file(const char* path) {
+    if (!path || !path[0]) {
+        return -1;
+    }
+
+    elf64_spawn_arg_t* arg =
+        (elf64_spawn_arg_t*)kmalloc64(sizeof(elf64_spawn_arg_t));
+
+    if (!arg) {
+        k64_print("elf64: failed to allocate spawn arg\n");
+        return -1;
+    }
+
+    mem_zero64(arg, sizeof(*arg));
+    str_copy64(arg->path, path, sizeof(arg->path));
+
+    int pid = process64_create_kernel_task(
+        "elf64-app",
+        elf64_process_entry,
+        arg
+    );
+
+    if (pid < 0) {
+        k64_print("elf64: failed to create app task\n");
+        return -1;
+    }
+
+    k64_print("elf64: spawned ");
+    k64_print(path);
+    k64_print(" pid=");
+    k64_print_dec64((nq_u64)pid);
+    k64_print("\n");
+
+    return pid;
 }

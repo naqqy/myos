@@ -11,6 +11,7 @@
 #include "../mm/pmm64.h"
 #include "../mm/kmem64.h"
 #include "../mm/paging64.h"
+#include "../mm/vmem64.h"
 
 #include "../storage/block64.h"
 
@@ -264,7 +265,13 @@ static void shell64_print_help(void) {
     k64_print("  sched stat    - show scheduler status\n");
     k64_print("  busytest      - create CPU-bound preemption test tasks\n");
     k64_print("  usertest      - enter ring 3 iretq test\n");
-    k64_print("  runelf <file> - load and enter ELF64 user app\n");
+    k64_print("  apptest       - spawn /apps/HELLO.ELF as process64 task\n");
+    k64_print("  run <file>    - spawn and run ELF64 app\n");
+    k64_print("  spawn <file>  - spawn ELF64 app as task\n");
+    k64_print("  kill <pid>    - kill task/process\n");
+    k64_print("  view <pid>    - view process terminal\n");
+    k64_print("  fg <pid>      - foreground process terminal\n");
+    k64_print("  vmem          - show virtual memory layout\n");
     k64_print("  reboot        - reboot machine\n");
     k64_print("  shutdown      - power off emulator\n");
 }
@@ -475,6 +482,182 @@ static void shell64_start_busy_test(void) {
     k64_print("\n");
 
     k64_print("Run 'preempton' to let timer IRQs preempt them.\n");
+}
+
+static int shell64_parse_u64(const char* s, nq_u64* out) {
+    nq_u64 value = 0;
+    int any = 0;
+    int base = 10;
+
+    if (!s || !out) {
+        return 0;
+    }
+
+    s = skip_spaces(s);
+
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        base = 16;
+        s += 2;
+    }
+
+    while (*s) {
+        char c = *s;
+        nq_u64 digit;
+
+        if (c >= '0' && c <= '9') {
+            digit = (nq_u64)(c - '0');
+        } else if (base == 16 && c >= 'a' && c <= 'f') {
+            digit = (nq_u64)(10 + c - 'a');
+        } else if (base == 16 && c >= 'A' && c <= 'F') {
+            digit = (nq_u64)(10 + c - 'A');
+        } else if (c == ' ' || c == '\t') {
+            break;
+        } else {
+            return 0;
+        }
+
+        if (digit >= (nq_u64)base) {
+            return 0;
+        }
+
+        value = value * (nq_u64)base + digit;
+        any = 1;
+        s++;
+    }
+
+    if (!any) {
+        return 0;
+    }
+
+    *out = value;
+    return 1;
+}
+
+static void shell64_spawn_app(const char* path) {
+    path = skip_spaces(path);
+
+    if (!path || !path[0]) {
+        k64_print("Usage: spawn <file>\n");
+        return;
+    }
+
+    int pid = elf64_spawn_file(path);
+
+    if (pid < 0) {
+        k64_print("spawn: failed to spawn app\n");
+        return;
+    }
+
+    k64_print("spawn: pid=");
+    k64_print_dec64((nq_u64)pid);
+    k64_print("\n");
+}
+
+static void shell64_run_app(const char* path) {
+    path = skip_spaces(path);
+
+    if (!path || !path[0]) {
+        k64_print("Usage: run <file>\n");
+        return;
+    }
+
+    int pid = elf64_spawn_file(path);
+
+    if (pid < 0) {
+        k64_print("run: failed to spawn app\n");
+        return;
+    }
+
+    k64_print("run: pid=");
+    k64_print_dec64((nq_u64)pid);
+    k64_print("\n");
+
+    /*
+     * Give the newly-created app task a chance to run immediately.
+     * If timer preemption is enabled, it will also run from IRQ0.
+     */
+    process64_yield();
+}
+
+static void shell64_view_process(const char* pid_text) {
+    nq_u64 pid64 = 0;
+
+    pid_text = skip_spaces(pid_text);
+
+    if (!pid_text || !pid_text[0]) {
+        k64_print("Usage: view <pid>\n");
+        k64_print("Use view 0 to return to shell terminal.\n");
+        return;
+    }
+
+    if (!shell64_parse_u64(pid_text, &pid64)) {
+        k64_print("view: invalid pid\n");
+        return;
+    }
+
+    if (pid64 > 0xFFFFFFFFull) {
+        k64_print("view: pid out of range\n");
+        return;
+    }
+
+    if (!process64_view_terminal((nq_u32)pid64)) {
+        k64_print("view: no such process terminal\n");
+    }
+}
+
+static void shell64_fg_process(const char* pid_text) {
+    nq_u64 pid64 = 0;
+
+    pid_text = skip_spaces(pid_text);
+
+    if (!pid_text || !pid_text[0]) {
+        k64_print("Usage: fg <pid>\n");
+        k64_print("Use fg 0 to return to shell terminal.\n");
+        return;
+    }
+
+    if (!shell64_parse_u64(pid_text, &pid64)) {
+        k64_print("fg: invalid pid\n");
+        return;
+    }
+
+    if (pid64 > 0xFFFFFFFFull) {
+        k64_print("fg: pid out of range\n");
+        return;
+    }
+
+    if (!process64_foreground((nq_u32)pid64)) {
+        k64_print("fg: no such process\n");
+    }
+}
+
+static void shell64_kill_process(const char* pid_text) {
+    nq_u64 pid64 = 0;
+
+    pid_text = skip_spaces(pid_text);
+
+    if (!pid_text || !pid_text[0]) {
+        k64_print("Usage: kill <pid>\n");
+        return;
+    }
+
+    if (!shell64_parse_u64(pid_text, &pid64)) {
+        k64_print("kill: invalid pid\n");
+        return;
+    }
+
+    if (pid64 > 0xFFFFFFFFull) {
+        k64_print("kill: pid out of range\n");
+        return;
+    }
+
+    if (process64_kill((nq_u32)pid64)) {
+        k64_print("kill: killed pid=");
+        k64_print_dec64(pid64);
+        k64_print("\n");
+    } else {
+        k64_print("kill: no such pid or cannot kill task\n");
+    }
 }
 
 static void shell64_blockdump(const char* arg) {
@@ -781,14 +964,31 @@ static void shell64_execute_command(void) {
     else if (str_eq(arg, "usertest")) {
         usermode64_enter_test();
     }
-    else if (str_starts_with(arg, "runelf ")) {
-        const char* path = skip_spaces(arg + 7);
+    else if (str_eq(arg, "apptest")) {
+        int pid = elf64_spawn_file("/apps/HELLO.ELF");
 
-        if (!path[0]) {
-            k64_print("Usage: runelf <file>\n");
-        } else {
-            elf64_exec_file(path);
+        if (pid < 0) {
+            k64_print("apptest: failed\n");
         }
+    }
+    else if (str_starts_with(arg, "run ")) {
+        shell64_run_app(arg + 4);
+    }
+    else if (str_starts_with(arg, "spawn ")) {
+        shell64_spawn_app(arg + 6);
+    }
+    else if (str_starts_with(arg, "kill ")) {
+        shell64_kill_process(arg + 5);
+    }
+    else if (str_starts_with(arg, "view ")) {
+        shell64_view_process(arg + 5);
+    }
+    else if (str_starts_with(arg, "fg ")) {
+        shell64_fg_process(arg + 3);
+    }
+    else if (str_eq(arg, "vmem")) {
+        vmem64_print_layout();
+        paging64_print_layout();
     }
     else if (str_eq(arg, "reboot")) {
         k64_print("Rebooting...\n");
@@ -797,16 +997,6 @@ static void shell64_execute_command(void) {
     else if (str_eq(arg, "shutdown")) {
         k64_print("Shutting down...\n");
         power64_shutdown();
-    }
-
-    /*
-     * Old-shell commands intentionally reserved for later ports.
-     */
-    else if (str_starts_with(arg, "run ")) {
-        shell64_not_ready("run");
-    }
-    else if (str_starts_with(arg, "spawn ")) {
-        shell64_not_ready("spawn");
     }
     else {
         k64_print("Unknown command: ");

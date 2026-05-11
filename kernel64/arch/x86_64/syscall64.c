@@ -5,6 +5,8 @@
 
 #include "../../mm/usercopy64.h"
 
+#include "../../proc/process64.h"
+
 static int g_syscall64_initialized = 0;
 
 #define SYSCALL64_WRITE_CHUNK_SIZE 128u
@@ -45,7 +47,7 @@ static nq_u64 syscall64_write(const char* user_s, nq_u64 max_len) {
             }
 
             if (c == '\n' || c == '\t' || (c >= 32 && c <= 126)) {
-                k64_putchar(c);
+                process64_write_current_len(&c, 1);
             }
 
             written++;
@@ -75,13 +77,19 @@ void syscall64_handler(syscall64_frame_t* frame) {
             break;
 
         case SYS64_EXIT:
+            k64_print("\n[user] SYS_EXIT code=");
+            k64_print_dec64(frame->rdi);
+            k64_print("\n");
+
             /*
-             * For now, we do not have real user processes wired to exit.
-             * Park forever in kernel by returning an error-ish value.
-             *
-             * Later this will call process64_exit_current_user().
-             */
-            k64_print("\n[user] SYS_EXIT called\n");
+            * This should not return for a normal process.
+            * It marks the current process ZOMBIE and switches away.
+            */
+            process64_exit();
+
+            /*
+            * Fallback if process64_exit ever returns.
+            */
             frame->rax = 0;
             break;
 

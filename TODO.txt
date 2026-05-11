@@ -4,7 +4,7 @@
 
 3 Port FAT32 read-only on top of block64. // DONE
 
-4 Add shell filesystem commands: // DONE
+4 Add shell filesystem commands. // DONE
 ls
 ls <path>
 cat <file>
@@ -30,13 +30,13 @@ vfs64_mount_root()
 
 13 Port terminal sessions/history. // DONE
 
-14 Add FAT32 write support: // DONE POC
+14 Add FAT32 write support. // DONE POC
 mkdir
 rm
 rmdir
 write file
 
-15 Add shell write commands: // DONE POC
+15 Add shell write commands. // DONE POC
 mkdir <path>
 rm <path>
 rmdir <path>
@@ -65,7 +65,7 @@ INITRD.NAQ
 
 22 Add timer preemption for kernel tasks. // DONE
 
-23 Add shell process/scheduler commands: // DONE
+23 Add shell process/scheduler commands. // DONE
 ps
 sched
 schedstat
@@ -76,10 +76,11 @@ proctest
 
 24 Add user-mode entry path with iretq. // DONE
 
-25 Add syscall64 ABI. // DONE
+25 Add syscall64 ABI. // DONE POC
 int 0x80
+DPL3 syscall trap gate
 SYS_WRITE
-SYS_EXIT POC
+SYS_EXIT
 SYS_GET_TICKS
 
 26 Add usercopy64. // DONE POC
@@ -96,76 +97,427 @@ ring 3 entry
 syscall output from ELF app
 
 28 Update app build system for 64-bit ELF apps. // DONE
+userapps/*.S builds to build/userapps/*.ELF
+apps packed into INITRD
+apps copied into FAT32 image for QEMU
 
-29 Add shell app commands: // TODO
+29 Integrate ELF apps with process64. // DONE POC
+run app as a task/process
+track app PID
+support SYS_EXIT properly
+update TSS.rsp0 per task
+return to shell after app exit
+
+30 Add shell app commands. // DONE POC
 run <file>
 spawn <file>
 kill <pid>
 
-30 Integrate ELF apps with process64. // TODO
-run app as a task/process
-track app PID
-support SYS_EXIT properly
-
-31 Add process terminal support: // TODO
+31 Add process terminal support. // DONE POC
 fg <pid>
 view <pid>
 private app terminals
+per-process terminal/session pointer
 
-32 Replace temporary early identity heap/paging assumptions with cleaner virtual memory layout. // TODO
+32 Replace temporary early identity heap/paging assumptions with cleaner virtual memory layout. // DONE PHASE 1
+added vmem64 layout
+added higher-half direct map
+kept low identity map temporarily
+moved kmem64 expansion toward direct-map physical access
 
-33 Reclaim UEFI BootServices memory safely after own page tables are active. // TODO
 
-34 Improve page-table allocation to use PMM-backed pages after mappings are stable. // TODO
+============================================================
+REAL-HARDWARE SAFETY PATH
+Goal: make USB/laptop testing safe before adding bigger app/game features.
+============================================================
 
-35 Add proper double-fault/page-fault IST testing. // TODO
+33 Add real-hardware-safe boot profile. // HIGH PRIORITY TODO
+detect/enable SAFE_HW mode
+disable block64 writes by default
+prefer INITRD root on USB boots
+do not auto-mount unknown internal disks writable
+require explicit command/flag before enabling disk writes
+print clear SAFE_HW status at boot
 
-36 Improve image64 to allocate large image buffers dynamically. // TODO
+34 Add hardware-safe shell mode. // HIGH PRIORITY TODO
+hide or disable rm/rmdir/write commands in SAFE_HW mode
+disable FAT32 write commands unless unsafe mode is enabled
+show warning before disk write unlock
+add command: safemode
+add command: diskunlock confirm
 
-37 Add automatic boot splash before shell starts. // TODO
+35 Add safer VFS mount policy. // HIGH PRIORITY TODO
+mount INITRD as default root on real hardware
+mount FAT32 read-only unless explicitly requested
+support /initrd and /disk mount points later
+prevent accidental writes to internal drives
 
-38 Add aspect-ratio preserving PNG conversion. // TODO
+36 Add block64 read-only device safety layer. // HIGH PRIORITY TODO
+separate read-only and writable block devices
+add block64_device_t
+add device name/type fields
+protect writes unless device is explicitly unlocked
+add shell command to list block devices safely
 
-39 Move large static buffers to kmalloc64. // TODO
+37 Add real-hardware boot diagnostics screen. // HIGH PRIORITY TODO
+show SAFE_HW status
+show framebuffer mode
+show keyboard/input status
+show VFS backend: INITRD/FAT32
+show block devices detected but not mounted writable
+show memory map summary
+show app/scheduler status
+
+38 Add safe real-hardware release image target. // HIGH PRIORITY TODO
+build.sh hardware-safe
+packs BOOTX64.EFI, KERNEL64.BIN, INITRD.NAQ
+SAFE_HW enabled by default
+block writes disabled
+apps/assets included
+easy USB copy command
+
+39 Add real-hardware test checklist. // HIGH PRIORITY TODO
+boot from USB
+verify keyboard
+verify framebuffer
+verify INITRD
+verify app launch
+verify app exit
+verify no disk writes
+verify graphics demo runs
+
+
+============================================================
+APP FOUNDATION PATH
+Goal: make real C apps usable before building the GUI and 3D game.
+============================================================
+
+40 Add C user app runtime. // HIGH PRIORITY TODO
+minimal crt0
+_start calls main()
+syscall wrappers
+basic memset/memcpy/strlen
+basic malloc later
+build .c apps into ELF64
+
+41 Update app build system for C apps. // HIGH PRIORITY TODO
+compile userapps/*.c
+link with user crt0/runtime
+build apps into /apps/*.ELF
+support assembly and C apps together
+add example C app
+
+42 Add syscall table expansion needed for apps. // HIGH PRIORITY TODO
+SYS_WRITE
+SYS_EXIT
+SYS_GET_TICKS
+SYS_YIELD
+SYS_GETPID
+SYS_SLEEP
+return negative error codes
+consistent syscall argument validation
+
+43 Add app timing syscalls. // HIGH PRIORITY TODO
+SYS_GET_TICKS
+SYS_SLEEP
+SYS_YIELD
+fixed timestep helper for games
+frame timing support
+
+44 Add input syscalls for apps. // HIGH PRIORITY TODO
+SYS_INPUT_POLL_KEY
+SYS_INPUT_GET_KEY
+keyboard events routed to foreground app
+shell keeps control when no foreground app
+
+45 Add foreground/background app model. // HIGH PRIORITY TODO
+run waits for foreground app
+spawn starts background app
+shell remains responsive
+foreground ownership of terminal input
+fg <pid> gives keyboard to app
+view <pid> only views terminal/output
+
+46 Add task/process reaping. // HIGH PRIORITY TODO
+free ZOMBIE task stacks
+free app spawn args
+free user stacks/app memory
+destroy private terminals when safe
+remove dead tasks from process table safely
+
+47 Add app file read syscalls. // HIGH PRIORITY TODO
+SYS_OPEN
+SYS_READ
+SYS_CLOSE
+SYS_STAT
+read-only app asset loading
+safe path validation
+per-process file handles
+
+48 Add process stdout/stderr terminal routing. // HIGH PRIORITY TODO
+SYS_WRITE goes to process terminal/stdout
+graphical apps can still log to terminal
+view <pid> shows app logs
+fg <pid> controls app screen/input
+
+
+============================================================
+GRAPHICS APP PATH
+Goal: support visually appealing graphical apps instead of text-only demos.
+============================================================
+
+49 Add app graphics API/syscalls. // HIGH PRIORITY TODO
+SYS_GFX_INFO
+SYS_GFX_CLEAR
+SYS_GFX_PRESENT
+SYS_GFX_DRAW_RECT
+SYS_GFX_DRAW_IMAGE/BLIT
+safe framebuffer access through kernel
+foundation for GUI/window compositor
+
+50 Add user app framebuffer/backbuffer support. // HIGH PRIORITY TODO
+allocate app-owned backbuffer
+let app render into user memory
+kernel copies/presents to framebuffer or window buffer
+avoid giving apps direct raw framebuffer access
+support simple double buffering
+
+51 Add graphical app mode. // HIGH PRIORITY TODO
+process can request graphics mode
+shell can switch between terminal/app/window views
+view <pid> for graphical app shows its framebuffer/window
+fg <pid> sends input to graphical app
+
+52 Add 2D graphics demo app in C. // HIGH PRIORITY TODO
+draw moving shapes
+draw images/sprites
+read keyboard input
+use timing syscalls
+prove app graphics/input/timing syscalls work
+
+53 Add game asset pipeline foundation. // HIGH PRIORITY TODO
+PNG → NIMG textures
+pack assets into INITRD and FAT32 image
+app asset loading through VFS/syscalls
+asset paths under /assets/game/
+
+54 Add graphics performance improvements. // HIGH PRIORITY TODO
+fast framebuffer blit
+dirty rectangle updates
+simple double buffering
+avoid full-screen copy when possible
+frame timing display
+
+
+============================================================
+WINDOW / GUI SYSTEM PATH
+Goal: make NAQ OS feel like a real graphical OS before/alongside the 3D game path.
+============================================================
+
+55 Add basic kernel GUI compositor. // HIGH PRIORITY TODO
+desktop background
+window list
+active window tracking
+draw window frames
+draw title bars
+basic close/minimize placeholders
+software compositing to framebuffer
+
+56 Add app window API/syscalls. // HIGH PRIORITY TODO
+SYS_WIN_CREATE
+SYS_WIN_DESTROY
+SYS_WIN_PRESENT
+SYS_WIN_SET_TITLE
+SYS_WIN_GET_EVENT
+apps render into window-owned buffers
+kernel composites windows to screen
+
+57 Add per-window framebuffer/backbuffer. // HIGH PRIORITY TODO
+allocate window pixel buffers
+clip window drawing
+copy app backbuffer into window buffer
+compositor copies visible window regions to screen
+support dirty rectangles later
+
+58 Add GUI event system. // HIGH PRIORITY TODO
+keyboard events
+mouse events later
+window focus events
+close events
+resize events later
+foreground app receives focused-window input
+
+59 Add shell/desktop integration. // HIGH PRIORITY TODO
+boot into text shell first
+GUI command starts desktop
+optional auto-start GUI mode later
+terminal window for shell later
+show running apps/windows
+keyboard shortcut to return to shell
+
+60 Add basic GUI widgets. // HIGH PRIORITY TODO
+buttons
+labels
+panels
+simple text drawing
+basic font rendering in windows
+debug window/app launcher later
+
+61 Add graphical terminal window. // HIGH PRIORITY TODO
+render terminal session inside a GUI window
+shell terminal as first GUI app
+view process terminals as windows
+scrollback display
+keyboard input routed to focused terminal window
+
+62 Add GUI app demo in C. // HIGH PRIORITY TODO
+open a window
+draw moving shapes
+handle keyboard input
+present frames
+prove window syscalls work from user mode
+
+63 Add game window/fullscreen mode. // HIGH PRIORITY TODO
+allow game to create fullscreen window
+allow game to create bordered window
+toggle fullscreen later
+route keyboard input to game window
+present game frames through compositor or direct fullscreen path
+
+
+============================================================
+3D GAME PATH
+Goal: build a visually appealing C game with actual models.
+============================================================
+
+64 Add 3D software renderer app foundation. // HIGH PRIORITY TODO
+C math library: vec2/vec3/mat4
+perspective projection
+camera movement
+triangle rasterizer
+depth buffer
+flat shading
+keyboard controls
+
+65 Add 3D model format/tooling. // HIGH PRIORITY TODO
+choose simple custom model format first
+build-time OBJ → NMODEL converter
+support vertices and indices
+support normals
+support UVs later
+
+66 Add model loading support for user apps. // HIGH PRIORITY TODO
+read NMODEL from /assets/game/
+parse model header safely
+load vertices/indices into app memory
+render loaded model in test app
+
+67 Add texture support for software renderer. // HIGH PRIORITY TODO
+load NIMG textures from assets
+nearest-neighbor texture sampling first
+perspective-correct texture mapping later
+basic material support
+
+68 Add visually appealing 3D demo/game. // HIGH PRIORITY TODO
+real 3D models, not ASCII
+software-rendered scene
+textured or flat-shaded models
+player/camera movement
+simple collision
+windowed and/or fullscreen presentation
+runs as ELF64 C app
+
+69 Add game-friendly debugging tools. // TODO
+fps counter
+frame time display
+memory usage command
+process/app stats
+graphics mode info
+input event debug command
+
+
+============================================================
+MEMORY AND ISOLATION PATH
+Goal: make user apps safer and allow multiple apps without collisions.
+============================================================
+
+70 Add stronger user memory model. // HIGH PRIORITY TODO
+separate user virtual range
+real user stack allocation/mapping
+remove user access from kernel pages
+track app-owned memory regions
+
+71 Add per-process user memory ownership. // HIGH PRIORITY TODO
+track allocated user pages per process
+free pages on SYS_EXIT
+prevent app memory overlap
+prepare for multiple apps at once
+
+72 Add per-process page tables. // HIGH PRIORITY TODO
+separate app address spaces
+map kernel supervisor-only
+map app code/data/user stack per process
+switch CR3 during context switch
+
+73 Improve ELF64 loader memory model. // HIGH PRIORITY TODO
+load multiple apps without overwriting fixed region
+allocate/map app memory per process
+map PT_LOAD segments with correct permissions
+free app memory on exit
+support argv/envp later
+
+74 Remove broad low identity mapping. // TODO
+only keep required low mappings temporarily
+use direct map for physical memory access
+map user pages explicitly
+map framebuffer explicitly
+improve kernel/user isolation
+
+75 Improve page-table allocation to use PMM-backed pages after mappings are stable. // TODO
+stop relying on identity pointers for page tables
+use direct-map physical access consistently
+track page-table pages
+free process page tables on exit
+
+76 Reclaim UEFI BootServices memory safely after own page tables are active. // TODO
+identify BootServicesCode/Data regions
+avoid reclaiming kernel/initrd/stack/memory-map/framebuffer/page tables
+return safe frames to PMM
+print reclaimed bytes
+
+77 Move large static buffers to kmalloc64. // TODO
 shell file buffer
 shell image buffer
 terminal session buffers
 ELF load buffer
 FAT buffers if needed
 
-40 Harden FAT32 write/free-chain logic. // TODO
+78 Flesh out usermode64 POC. // TODO
+stop marking kernel pages user-accessible
+move test user code into real user pages
+create real user stacks from mapped pages
+validate CPL3 exceptions return through TSS/RSP0
+separate kernel/user memory permissions
+
+79 Flesh out usercopy64 POC. // TODO
+check writable pages separately from readable pages
+copy fault recovery instead of precheck-only
+support crossing page boundaries safely
+reject kernel pointers from user mode
+integrate with per-process page tables
+
+
+============================================================
+FILESYSTEM AND STORAGE HARDENING
+Goal: make storage safer and cleaner after game path is functional.
+============================================================
+
+80 Harden FAT32 write/free-chain logic. // TODO
 checked cluster-chain freeing
 better FAT corruption guards
 safe overwrite behavior
 
-41 Add proper VFS directory entry API. // TODO
-vfs64_dirent_t
-backend-independent ls
-cleaner LFN handling
-
-42 Add stronger user memory model. // TODO
-separate user virtual range
-per-process page tables
-real user stack allocation/mapping
-remove user access from kernel pages
-
-43 Add syscall table expansion. // TODO
-read
-write
-open
-close
-exit
-yield
-getpid
-sleep
-
-44 Add app loader improvements. // TODO
-argv/envp
-multiple ELF segments with permissions
-better validation
-non-looping app return path
-
-45 Flesh out FAT32 write POC. // TODO
+81 Flesh out FAT32 write POC. // TODO
 replace whole-file append rewrite with real append/write offsets
 re-enable old cluster-chain freeing safely
 checked cluster-chain walking
@@ -173,13 +525,31 @@ update FSInfo free cluster count if used
 add timestamps later
 add LFN creation later
 
-46 Flesh out INITRD POC. // TODO
+82 Add proper VFS directory entry API. // TODO
+vfs64_dirent_t
+backend-independent ls
+cleaner LFN handling
+
+83 Flesh out VFS POC. // TODO
+backend-independent vfs64_dirent_t
+mount table instead of one root backend
+support fallback/overlay between FAT32 and INITRD
+normalize all paths consistently
+clean permission/read-only errors
+
+84 Flesh out INITRD POC. // TODO
 cleaner directory listing
 directory entries instead of flat path listing
 optional compression later
 optional module metadata later
 
-47 Flesh out scheduler/process64 POC. // TODO
+
+============================================================
+PROCESS/SCHEDULER HARDENING
+Goal: make multitasking more correct after apps are useful.
+============================================================
+
+85 Flesh out scheduler/process64 POC. // TODO
 real task cleanup/reaping
 free task stacks
 task sleep/block states
@@ -188,50 +558,103 @@ timer-preempt-safe scheduler path
 per-task terminal/session pointer
 per-task kernel stack ownership
 
-48 Flesh out usermode64 POC. // TODO
-stop marking kernel pages user-accessible
-move test user code into real user pages
-create real user stacks from mapped pages
-validate CPL3 exceptions return through TSS/RSP0
-separate kernel/user memory permissions
+86 Improve process terminal support. // TODO
+private terminal cleanup/reaping
+foreground process receives keyboard input
+shell hotkey to reclaim foreground
+terminal scrollback controls
+terminal resize handling later
 
-49 Flesh out syscall64 POC. // TODO
-proper syscall dispatch table
-return negative error codes
-SYS_EXIT should terminate current process
-SYS_WRITE should write to process terminal/stdout
-add getpid/yield/sleep/read/open/close later
-validate syscall args consistently
+87 Add proper double-fault/page-fault IST testing. // TODO
+test double-fault IST
+test page-fault IST
+test user-mode page fault handling
+test kernel-mode page fault panic path
 
-50 Flesh out usercopy64 POC. // TODO
-check writable pages separately from readable pages
-copy fault recovery instead of precheck-only
-support crossing page boundaries safely
-reject kernel pointers from user mode
-integrate with per-process page tables
+88 Add user fault recovery. // TODO
+user app page fault kills app, not whole kernel
+invalid opcode in user app kills app
+print fault into process terminal
+return to shell safely
 
-51 Flesh out ELF64 loader POC. // TODO
-integrate ELF execution with process64
-do not jump directly from shell forever
-free app memory on exit
-support argv/envp
-load multiple apps without overwriting fixed region
-map PT_LOAD segments with correct permissions
-support PIE/relocations later if needed
 
-52 Flesh out VFS POC. // TODO
-backend-independent vfs64_dirent_t
-mount table instead of one root backend
-support fallback/overlay between FAT32 and INITRD
-normalize all paths consistently
-clean permission/read-only errors
+============================================================
+IMAGE / SPLASH / UI POLISH
+Goal: visual polish after core game path exists.
+============================================================
 
-Later: add USB HID keyboard support. // TODO
+89 Improve image64 to allocate large image buffers dynamically. // TODO
 
-Later: add USB mass storage backend under block64. // TODO
+90 Add automatic boot splash before shell starts. // TODO
 
-Later: add AHCI/SATA backend under block64. // TODO
+91 Add aspect-ratio preserving PNG conversion. // TODO
 
-Later: add NVMe backend under block64. // TODO
+92 Improve shell visual UI. // TODO
+status bar
+current VFS backend
+safe mode indicator
+scheduler/app status
+maybe command history display
 
-Later: add ext4 read-only behind the same VFS/block layer. // TODO
+
+============================================================
+REAL HARDWARE DEVICE SUPPORT
+Goal: broaden hardware support after safe software-rendered game works.
+============================================================
+
+93 Add USB HID keyboard support. // TODO
+xHCI discovery later if needed
+start with firmware/legacy keyboard fallback detection
+eventually support wired USB keyboards reliably
+support keyboard input on more real laptops/desktops
+
+94 Add PS/2 mouse or USB mouse support. // TODO
+PS/2 mouse if available
+USB HID mouse later
+app mouse input syscalls
+camera/look support for 3D game
+
+95 Add AHCI/SATA backend under block64. // TODO
+
+96 Add NVMe backend under block64. // TODO
+
+97 Add USB mass storage backend under block64. // TODO
+
+98 Add ext4 read-only behind the same VFS/block layer. // TODO
+
+
+============================================================
+LONG TERM / OPTIONAL
+Goal: not necessary for the immediate real-hardware 3D game milestone.
+============================================================
+
+99 Add audio later. // LONG TERM TODO
+PC speaker proof of concept
+simple PCM mixer later
+audio syscall/API later
+game sound effects later
+
+100 Add packaging for game assets. // LONG TERM TODO
+game.pak or initrd asset bundle
+model/texture lookup table
+asset compression later
+versioned asset format
+
+101 Add hardware GPU acceleration. // LONG TERM TODO
+software rendering first
+GOP has no real acceleration
+eventually explore PCI/GPU drivers much later
+
+102 Add networking. // LONG TERM TODO
+PCI NIC discovery
+simple driver later
+UDP/IP stack much later
+
+103 Add dynamic linking/shared libraries. // LONG TERM TODO
+static ELF apps are enough for now
+shared libc later if needed
+
+104 Add SMP/multicore. // LONG TERM TODO
+single-core is enough for now
+AP startup later
+scheduler SMP later

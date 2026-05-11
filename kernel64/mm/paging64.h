@@ -24,4 +24,15 @@ int paging64_user_range_accessible(nq_u64 virt_addr, nq_u64 size);
 
 void paging64_print_summary(void);
 
+int paging64_map_2m_range(
+    nq_u64 virt,
+    nq_u64 phys,
+    nq_u64 size,
+    nq_u64 flags
+);
+
+int paging64_map_direct_range(nq_u64 phys_start, nq_u64 size);
+
+void paging64_print_layout(void);
+
 #endif

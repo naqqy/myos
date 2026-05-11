@@ -18,6 +18,11 @@ terminal64_session_t* terminal64_kernel(void);
 terminal64_session_t* terminal64_active(void);
 void terminal64_switch(terminal64_session_t* t);
 
+void terminal64_put_char(terminal64_session_t* t, char c);
+void terminal64_write(terminal64_session_t* t, const char* s);
+void terminal64_write_len(terminal64_session_t* t, const char* s, nq_u64 len);
+
+nq_u32 terminal64_id(terminal64_session_t* t);
 nq_u32 terminal64_cursor_row(terminal64_session_t* t);
 nq_u32 terminal64_cursor_col(terminal64_session_t* t);
 nq_u32 terminal64_view_top(terminal64_session_t* t);
