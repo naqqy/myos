@@ -26,6 +26,8 @@
 
 #include "../exec/elf64.h"
 
+#include "../safety/safe_mode64.h"
+
 #define SHELL64_INPUT_MAX 128
 #define SHELL64_FILE_BUFFER_SIZE 65536u
 #define SHELL64_IMAGE_BUFFER_SIZE (1024u * 1024u)
@@ -177,6 +179,19 @@ static int shell64_parse_echo_append(
     return 1;
 }
 
+static int shell64_require_disk_write_unlocked(const char* command_name) {
+    if (safe_mode64_disk_writes_allowed()) {
+        return 1;
+    }
+
+    k64_print(command_name);
+    k64_print(": blocked by SAFE_HW mode.\n");
+    k64_print("Disk writes are locked to protect real hardware.\n");
+    k64_print("Use 'diskunlock confirm' only if you are sure this disk is safe to write.\n");
+
+    return 0;
+}
+
 static void shell64_echo_append(const char* arg) {
     const char* text;
     const char* path;
@@ -186,6 +201,10 @@ static void shell64_echo_append(const char* arg) {
 
     if (!shell64_parse_echo_append(arg, &text, &text_len, &path)) {
         k64_print("Usage: echo \"TEXT\" >> <path>\n");
+        return;
+    }
+
+    if (!shell64_require_disk_write_unlocked("echo >>")) {
         return;
     }
 
@@ -233,10 +252,17 @@ static void shell64_print_help(void) {
     k64_print("  help          - show this help\n");
     k64_print("  about         - show kernel info\n");
     k64_print("  clear / cls   - clear screen\n");
-    k64_print("  mkdir <path>  - create directory\n");
-    k64_print("  rm <path>     - remove file\n");
-    k64_print("  rmdir <path>  - remove empty directory\n");
-    k64_print("  echo \"TEXT\" >> <path> - append text to file\n");
+    if (safe_mode64_disk_writes_allowed()) {
+        k64_print("  mkdir <path>  - create directory\n");
+        k64_print("  rm <path>     - remove file\n");
+        k64_print("  rmdir <path>  - remove empty directory\n");
+        k64_print("  echo \"TEXT\" >> <path> - append text to file\n");
+    } else {
+        k64_print("  mkdir <path>  - LOCKED by SAFE_HW\n");
+        k64_print("  rm <path>     - LOCKED by SAFE_HW\n");
+        k64_print("  rmdir <path>  - LOCKED by SAFE_HW\n");
+        k64_print("  echo \"TEXT\" >> <path> - LOCKED by SAFE_HW\n");
+    }
     k64_print("  echo <text>   - print text\n");
     k64_print("  ls            - list root directory\n");
     k64_print("  ls <path>     - list directory/file\n");
@@ -272,6 +298,9 @@ static void shell64_print_help(void) {
     k64_print("  view <pid>    - view process terminal\n");
     k64_print("  fg <pid>      - foreground process terminal\n");
     k64_print("  vmem          - show virtual memory layout\n");
+    k64_print("  safemode      - show SAFE_HW status\n");
+    k64_print("  disklock      - lock disk writes\n");
+    k64_print("  diskunlock confirm - unlock disk writes in SAFE_HW mode\n");
     k64_print("  reboot        - reboot machine\n");
     k64_print("  shutdown      - power off emulator\n");
 }
@@ -855,6 +884,8 @@ static void shell64_execute_command(void) {
 
         if (!path[0]) {
             k64_print("Usage: mkdir <path>\n");
+        } else if (!shell64_require_disk_write_unlocked("mkdir")) {
+            return;
         } else if (vfs64_mkdir(path)) {
             k64_print("Directory created.\n");
         } else {
@@ -866,6 +897,8 @@ static void shell64_execute_command(void) {
 
         if (!path[0]) {
             k64_print("Usage: rm <path>\n");
+        } else if (!shell64_require_disk_write_unlocked("rm")) {
+            return;
         } else if (vfs64_rm(path)) {
             k64_print("File removed.\n");
         } else {
@@ -877,6 +910,8 @@ static void shell64_execute_command(void) {
 
         if (!path[0]) {
             k64_print("Usage: rmdir <path>\n");
+        } else if (!shell64_require_disk_write_unlocked("rmdir")) {
+            return;
         } else if (vfs64_rmdir(path)) {
             k64_print("Directory removed.\n");
         } else {
@@ -989,6 +1024,26 @@ static void shell64_execute_command(void) {
     else if (str_eq(arg, "vmem")) {
         vmem64_print_layout();
         paging64_print_layout();
+    }
+    else if (str_eq(arg, "safemode")) {
+        safe_mode64_print_status();
+    }
+    else if (str_eq(arg, "disklock")) {
+        safe_mode64_lock_disk_writes();
+        k64_print("Disk writes locked.\n");
+    }
+    else if (str_eq(arg, "diskunlock confirm")) {
+        k64_print("WARNING: unlocking disk writes.\n");
+        k64_print("On real hardware this can corrupt internal drives if the wrong disk is mounted.\n");
+        k64_print("Only use this in QEMU or on disposable test media.\n");
+
+        safe_mode64_unlock_disk_writes();
+
+        k64_print("Disk writes are now UNLOCKED.\n");
+    }
+    else if (str_starts_with(arg, "diskunlock")) {
+        k64_print("Usage: diskunlock confirm\n");
+        k64_print("WARNING: this allows disk writes on real hardware.\n");
     }
     else if (str_eq(arg, "reboot")) {
         k64_print("Rebooting...\n");

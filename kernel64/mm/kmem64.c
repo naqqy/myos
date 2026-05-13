@@ -143,10 +143,6 @@ static int kmem64_expand(nq_u64 min_payload_bytes) {
 
     mem_zero(block, bytes);
 
-    k64_print("1");
-    mem_zero((void*)phys, bytes);
-    k64_print("2");
-
     block->size = bytes - hsize;
     block->free = 1;
     block->next = 0;

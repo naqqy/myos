@@ -1,40 +1,6 @@
 #include "gdt64.h"
 #include "../../k64_console.h"
 
-#define GDT64_ACCESS_KERNEL_CODE 0x9A
-#define GDT64_ACCESS_KERNEL_DATA 0x92
-#define GDT64_ACCESS_USER_DATA   0xF2
-#define GDT64_ACCESS_USER_CODE   0xFA
-#define GDT64_ACCESS_TSS         0x89
-
-#define GDT64_FLAG_LONG_MODE     0x20
-
-/*
- * GDT selector layout:
- *
- *   0x00 null
- *   0x08 kernel code
- *   0x10 kernel data
- *   0x18 user data
- *   0x20 user code
- *   0x28 TSS
- *
- * Ring 3 selectors need RPL=3:
- *
- *   user data = 0x18 | 3 = 0x1B
- *   user code = 0x20 | 3 = 0x23
- */
-#define GDT64_KERNEL_CODE     0x08
-#define GDT64_KERNEL_DATA     0x10
-#define GDT64_USER_DATA       0x18
-#define GDT64_USER_CODE       0x20
-#define GDT64_TSS             0x28
-
-#define GDT64_USER_DATA_SEL   (GDT64_USER_DATA | 3)
-#define GDT64_USER_CODE_SEL   (GDT64_USER_CODE | 3)
-
-#define GDT64_IST_STACK_SIZE  16384u
-
 typedef struct gdt64_tss {
     nq_u32 reserved0;
 

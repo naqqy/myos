@@ -23,6 +23,8 @@
 
 #include "proc/process64.h"
 
+#include "safety/safe_mode64.h"
+
 static void halt_forever(void) {
     for (;;) {
         __asm__ volatile ("hlt");
@@ -73,6 +75,9 @@ static void kernel64_test_kmem(void) {
 
 void kmain64(naq_boot_info_t* boot) {
     k64_console_init(boot);
+
+    safe_mode64_init();
+    safe_mode64_print_status();
 
     k64_print("kmain64 entered after ExitBootServices.\n");
 
@@ -141,16 +146,17 @@ void kmain64(naq_boot_info_t* boot) {
 
     k64_print("Interrupts enabled.\n");
 
-    if (block64_init()) {
-        k64_print("Block64 initialized.\n");
+    if (safe_mode64_enabled()) {
+        k64_print("SAFE_HW: skipping block64 disk probing.\n");
+        k64_print("SAFE_HW: using INITRD-first root policy.\n");
     } else {
-        k64_print("Block64: no legacy ATA disk detected.\n");
+        if (block64_init()) {
+            k64_print("Block64 initialized.\n");
+        } else {
+            k64_print("Block64 unavailable.\n");
+        }
     }
 
-    /*
-     * UEFI image is currently a raw FAT32 filesystem image,
-     * so FAT32 starts at disk LBA 0.
-     */
     if (vfs64_mount_root()) {
         vfs64_print_summary();
     } else {

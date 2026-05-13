@@ -1,6 +1,7 @@
 #include "block64.h"
 #include "../arch/x86_64/io64.h"
 #include "../k64_console.h"
+#include "../safety/safe_mode64.h"
 
 #define ATA_PRIMARY_IO      0x1F0
 #define ATA_PRIMARY_CTRL    0x3F6
@@ -285,6 +286,11 @@ int block64_read(nq_u64 lba, void* buffer, nq_u32 sector_count) {
 }
 
 int block64_write(nq_u64 lba, const void* buffer, nq_u32 sector_count) {
+    if (!safe_mode64_disk_writes_allowed()) {
+        k64_print("block64: write blocked by SAFE_HW mode\n");
+        return 0;
+    }
+
     if (!g_block_ready || !buffer) {
         return 0;
     }

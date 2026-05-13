@@ -131,7 +131,7 @@ REAL-HARDWARE SAFETY PATH
 Goal: make USB/laptop testing safe before adding bigger app/game features.
 ============================================================
 
-33 Add real-hardware-safe boot profile. // HIGH PRIORITY TODO
+33 Add real-hardware-safe boot profile. // DONE
 detect/enable SAFE_HW mode
 disable block64 writes by default
 prefer INITRD root on USB boots
@@ -139,7 +139,7 @@ do not auto-mount unknown internal disks writable
 require explicit command/flag before enabling disk writes
 print clear SAFE_HW status at boot
 
-34 Add hardware-safe shell mode. // HIGH PRIORITY TODO
+34 Add hardware-safe shell mode. // DONE
 hide or disable rm/rmdir/write commands in SAFE_HW mode
 disable FAT32 write commands unless unsafe mode is enabled
 show warning before disk write unlock

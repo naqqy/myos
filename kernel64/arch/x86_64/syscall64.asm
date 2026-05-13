@@ -65,3 +65,5 @@ syscall64_stub:
     add rsp, 8
 
     iretq
+
+section .note.GNU-stack noalloc noexec nowrite progbits

@@ -52,3 +52,5 @@ user_msg:
     db "Hello from ring 3 via int 0x80!", 10, 0
 
 user_msg_len equ $ - user_msg
+
+section .note.GNU-stack noalloc noexec nowrite progbits

@@ -2,6 +2,7 @@
 #include "fat32_64.h"
 #include "initrd64.h"
 #include "../k64_console.h"
+#include "../safety/safe_mode64.h"
 
 static int g_vfs_mounted = 0;
 
@@ -216,6 +217,27 @@ int vfs64_mount_root(void) {
     g_vfs_mounted = 0;
     g_vfs_backend = VFS64_BACKEND_NONE;
 
+    if (safe_mode64_enabled()) {
+        if (initrd64_available()) {
+            g_vfs_mounted = 1;
+            g_vfs_backend = VFS64_BACKEND_INITRD;
+            k64_print("vfs64: mounted INITRD root due to SAFE_HW mode\n");
+            return 1;
+        }
+
+        /*
+         * Fallback: FAT32 read-only behavior is acceptable, but writes
+         * remain blocked by block64_write().
+         */
+        g_vfs_mounted = 1;
+        g_vfs_backend = VFS64_BACKEND_FAT32;
+        k64_print("vfs64: mounted FAT32 root read-only due to SAFE_HW mode\n");
+        return 1;
+    }
+
+    /*
+     * Normal/dev behavior.
+     */
     if (fat32_64_init(0)) {
         g_vfs_mounted = 1;
         g_vfs_backend = VFS64_BACKEND_FAT32;

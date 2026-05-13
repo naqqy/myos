@@ -226,3 +226,5 @@ isr64_stub_table:
     dq isr64_stub_29
     dq isr64_stub_30
     dq isr64_stub_31
+
+section .note.GNU-stack noalloc noexec nowrite progbits

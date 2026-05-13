@@ -48,6 +48,8 @@
  */
 #define ELF64_USER_MIN_ADDR 0x02000000ull
 #define ELF64_USER_MAX_ADDR 0x04000000ull
+#define ELF64_USER_STACK_TOP ELF64_USER_MAX_ADDR
+#define ELF64_USER_STACK_BASE (ELF64_USER_STACK_TOP - ELF64_USER_STACK_SIZE)
 
 typedef struct elf64_ehdr {
     nq_u8  e_ident[EI_NIDENT];
@@ -237,7 +239,7 @@ static int elf64_validate_load_segment(
 
     nq_u64 mem_end = ph->p_vaddr + ph->p_memsz;
 
-    if (mem_end < ph->p_vaddr || mem_end > ELF64_USER_MAX_ADDR) {
+    if (mem_end < ph->p_vaddr || mem_end > ELF64_USER_STACK_BASE) {
         k64_print("elf64: segment outside POC user range\n");
         return 0;
     }
@@ -361,19 +363,12 @@ int elf64_exec_file(const char* path) {
         return 0;
     }
 
-    void* user_stack = kmalloc64(ELF64_USER_STACK_SIZE);
-
-    if (!user_stack) {
-        k64_print("elf64: failed to allocate user stack\n");
-        return 0;
-    }
-
-    mem_zero64(user_stack, ELF64_USER_STACK_SIZE);
-
-    nq_u64 user_stack_base = (nq_u64)user_stack;
-    nq_u64 user_stack_top = user_stack_base + ELF64_USER_STACK_SIZE;
+    nq_u64 user_stack_base = ELF64_USER_STACK_BASE;
+    nq_u64 user_stack_top = ELF64_USER_STACK_TOP;
 
     user_stack_top &= ~0xFull;
+
+    mem_zero64((void*)user_stack_base, ELF64_USER_STACK_SIZE);
 
     if (!paging64_mark_user_range(user_stack_base, ELF64_USER_STACK_SIZE)) {
         k64_print("elf64: failed to mark user stack\n");
@@ -406,18 +401,22 @@ int elf64_exec_file(const char* path) {
 
 static void elf64_process_entry(void* arg) {
     elf64_spawn_arg_t* spawn_arg = (elf64_spawn_arg_t*)arg;
+    char path[ELF64_MAX_PATH];
 
     if (!spawn_arg || !spawn_arg->path[0]) {
         k64_print("elf64 task: missing path\n");
         process64_exit();
     }
 
+    str_copy64(path, spawn_arg->path, sizeof(path));
+    kfree64(spawn_arg);
+
     /*
      * This enters ring 3 and normally does not return until:
      *   - app faults, or
      *   - app calls SYS_EXIT and the syscall path terminates this task.
      */
-    if (!elf64_exec_file(spawn_arg->path)) {
+    if (!elf64_exec_file(path)) {
         k64_print("elf64 task: exec failed\n");
         process64_exit();
     }
@@ -452,6 +451,7 @@ int elf64_spawn_file(const char* path) {
 
     if (pid < 0) {
         k64_print("elf64: failed to create app task\n");
+        kfree64(arg);
         return -1;
     }
 

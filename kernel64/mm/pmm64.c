@@ -10,6 +10,8 @@ static nq_u64 pmm64_next_search = 0;
 static int pmm64_ready = 0;
 
 #define PMM64_EARLY_KERNEL_RESERVE_SIZE (16ull * 1024ull * 1024ull)
+#define PMM64_POC_USER_BASE             0x02000000ull
+#define PMM64_POC_USER_SIZE             0x02000000ull
 
 static nq_u64 align_down64(nq_u64 value, nq_u64 align) {
     return value & ~(align - 1ull);
@@ -254,6 +256,12 @@ static void pmm64_reserve_boot_regions(const naq_boot_info_t* boot) {
             boot->initrd_size
         );
     }
+
+    /*
+     * The current ELF64 loader uses a fixed identity-mapped POC user window.
+     * Keep those physical frames out of the kernel heap/PMM pool.
+     */
+    pmm64_reserve_region(PMM64_POC_USER_BASE, PMM64_POC_USER_SIZE);
 }
 
 int pmm64_init(const naq_boot_info_t* boot) {

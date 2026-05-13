@@ -52,3 +52,5 @@ context_switch64:
 
     ; Return into the new task.
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits
