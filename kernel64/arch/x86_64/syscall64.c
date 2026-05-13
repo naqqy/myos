@@ -7,6 +7,8 @@
 
 #include "../../proc/process64.h"
 
+#include "../../debug/bootlog64.h"
+
 static int g_syscall64_initialized = 0;
 
 #define SYSCALL64_WRITE_CHUNK_SIZE 128u
@@ -108,5 +110,5 @@ void syscall64_handler(syscall64_frame_t* frame) {
 
 void syscall64_init(void) {
     g_syscall64_initialized = 1;
-    k64_print("Syscall64 ABI initialized: int 0x80\n");
+    bootlog64_print("Syscall64 ABI initialized: int 0x80\n");
 }

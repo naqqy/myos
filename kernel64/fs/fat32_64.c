@@ -2,6 +2,7 @@
 
 #include "../storage/block64.h"
 #include "../k64_console.h"
+#include "../debug/bootlog64.h"
 
 #define FAT32_ATTR_READ_ONLY 0x01
 #define FAT32_ATTR_HIDDEN    0x02
@@ -1400,7 +1401,7 @@ int fat32_64_init(nq_u64 base_lba) {
 
     g_fat_mounted = 1;
 
-    k64_print("fat32: mounted read-only\n");
+    bootlog64_print("fat32: mounted read-only\n");
     return 1;
 }
 

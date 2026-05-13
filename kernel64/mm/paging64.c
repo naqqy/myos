@@ -2,6 +2,7 @@
 #include "pmm64.h"
 #include "../k64_console.h"
 #include "vmem64.h"
+#include "../debug/bootlog64.h"
 
 #define PTE_ADDR_MASK_4K 0x000FFFFFFFFFF000ull
 #define PTE_ADDR_MASK_2M 0x000FFFFFFFE00000ull
@@ -434,7 +435,7 @@ int paging64_init(const naq_boot_info_t* boot) {
         return 0;
     }
 
-    k64_print("paging64: direct map enabled\n");
+    bootlog64_print("paging64: direct map enabled\n");
 
     write_cr3(g_pml4_phys);
 

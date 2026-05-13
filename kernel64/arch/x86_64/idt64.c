@@ -2,6 +2,7 @@
 #include "gdt64.h"
 #include "../../k64_console.h"
 #include "syscall64.h"
+#include "../../debug/bootlog64.h"
 
 #define IDT64_ENTRIES 256
 
@@ -120,7 +121,7 @@ void idt64_install_irq_gates(void) {
         IDT_TYPE_INTERRUPT_GATE
     );
 
-    k64_print("IDT64 IRQ gates installed.\n");
+    bootlog64_print("IDT64 IRQ gates installed.\n");
 }
 
 void idt64_init(void) {
@@ -149,7 +150,7 @@ void idt64_init(void) {
 
     idt_load64(&idt64_ptr);
 
-    k64_print("IDT64 loaded.\n");
+    bootlog64_print("IDT64 loaded.\n");
 }
 
 void idt64_install_syscall_gate(void) {
@@ -161,7 +162,7 @@ void idt64_install_syscall_gate(void) {
         IDT_TYPE_USER_TRAP_GATE
     );
 
-    k64_print("IDT64 syscall gate installed.\n");
+    bootlog64_print("IDT64 syscall gate installed.\n");
 }
 
 void exception_handler64(interrupt_frame64_t* frame) {

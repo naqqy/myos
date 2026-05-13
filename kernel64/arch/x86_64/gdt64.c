@@ -1,5 +1,6 @@
 #include "gdt64.h"
 #include "../../k64_console.h"
+#include "../../debug/bootlog64.h"
 
 typedef struct gdt64_tss {
     nq_u32 reserved0;
@@ -221,10 +222,8 @@ void gdt64_init(const naq_boot_info_t* boot) {
     gdt64_load(&gdt64_ptr);
     tss64_load(GDT64_TSS);
 
-    k64_print("GDT64/TSS64 loaded.\n");
-    k64_print("User selectors: code=");
-    k64_print_hex64(GDT64_USER_CODE_SEL);
-    k64_print(" data=");
-    k64_print_hex64(GDT64_USER_DATA_SEL);
-    k64_print("\n");
+    bootlog64_print("GDT64/TSS64 loaded.\n");
+    bootlog64_print_hex("User selectors: code= ", GDT64_USER_CODE_SEL);
+    bootlog64_print_hex("User selectors: data= ", GDT64_USER_DATA_SEL);
+    bootlog64_print("\n");
 }

@@ -25,6 +25,9 @@
 
 #include "safety/safe_mode64.h"
 
+#include "debug/bootlog64.h"
+#include "debug/boot_diag64.h"
+
 static void halt_forever(void) {
     for (;;) {
         __asm__ volatile ("hlt");
@@ -77,41 +80,36 @@ void kmain64(naq_boot_info_t* boot) {
     k64_console_init(boot);
 
     safe_mode64_init();
-    safe_mode64_print_status();
 
-    k64_print("kmain64 entered after ExitBootServices.\n");
+    bootlog64_print("kmain64 entered after ExitBootServices.\n");
 
+    /*
+     * CPU descriptor/interrupt setup.
+     */
     gdt64_init(boot);
     idt64_init();
-
+    idt64_install_irq_gates();
     idt64_install_syscall_gate();
     syscall64_init();
 
+    /*
+     * Boot memory information.
+     */
     memmap64_init(boot);
-    k64_print("UEFI memory map parsed.\n");
-//    memmap64_print_summary();
-    k64_print("\n");
 
     if (!pmm64_init(boot)) {
         k64_print("PMM64 initialization failed.\n");
         halt_forever();
     }
 
-    k64_print("Kernel reserved base: ");
-    k64_print_hex64(boot->kernel_load_addr);
-    k64_print("\n");
-
-    k64_print("Kernel reserved minimum end: ");
-    k64_print_hex64(boot->kernel_load_addr + (4ull * 1024ull * 1024ull));
-    k64_print("\n");
-
-//    pmm64_print_summary();
-    kernel64_test_pmm();
-
-    if (boot->initrd_base && boot->initrd_size) {
+    /*
+     * IMPORTANT:
+     * INITRD must be initialized before vfs64_mount_root(),
+     * especially in SAFE_HW mode where VFS prefers INITRD.
+     */
+    if (boot && boot->initrd_base && boot->initrd_size) {
         if (initrd64_init(boot->initrd_base, boot->initrd_size)) {
-            k64_print("INITRD64 initialized.\n");
-            initrd64_print_summary();
+            bootlog64_print("INITRD64 initialized.\n");
         } else {
             k64_print("INITRD64 invalid.\n");
         }
@@ -119,53 +117,56 @@ void kmain64(naq_boot_info_t* boot) {
         k64_print("No INITRD provided.\n");
     }
 
+    /*
+     * Paging + heap.
+     */
     if (!paging64_init(boot)) {
         k64_print("Paging64 initialization failed.\n");
         halt_forever();
     }
-
-//    paging64_print_summary();
-    k64_print("\n");
 
     if (!kmem64_init(16)) {
         k64_print("KMEM64 initialization failed.\n");
         halt_forever();
     }
 
-//    kmem64_print_summary();
-    kernel64_test_kmem();
-
-    k64_print("Kernel64 foundation initialized.\n");
-
+    /*
+     * Input and hardware IRQ/timer setup.
+     * IMPORTANT:
+     * Without this, keyboard input will not work.
+     */
     kinput64_init();
     irq64_init(100);
 
-    k64_print("Timer Frequency: ");
-    k64_print_dec64(timer64_get_frequency());
-    k64_print(" Hz\n");
+    /*
+     * Process/task system.
+     */
+    process64_init();
 
-    k64_print("Interrupts enabled.\n");
-
+    /*
+     * Storage/VFS policy.
+     *
+     * SAFE_HW should avoid disk probing entirely.
+     */
     if (safe_mode64_enabled()) {
-        k64_print("SAFE_HW: skipping block64 disk probing.\n");
-        k64_print("SAFE_HW: using INITRD-first root policy.\n");
+        bootlog64_print("SAFE_HW: skipping block64 disk probing.\n");
+        bootlog64_print("SAFE_HW: using INITRD-first root policy.\n");
     } else {
         if (block64_init()) {
-            k64_print("Block64 initialized.\n");
+            bootlog64_print("Block64 initialized.\n");
         } else {
-            k64_print("Block64 unavailable.\n");
+            bootlog64_print("Block64 unavailable.\n");
         }
     }
 
-    if (vfs64_mount_root()) {
-        vfs64_print_summary();
-    } else {
+    if (!vfs64_mount_root()) {
         k64_print("VFS64 mount failed.\n");
     }
 
-    process64_init();
-
-    k64_print("\n");
+    /*
+     * One clean boot summary.
+     */
+    boot_diag64_print(boot);
 
     shell64_init();
 

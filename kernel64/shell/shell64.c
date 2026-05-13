@@ -247,62 +247,156 @@ static void shell64_prompt(void) {
     k64_print("KER64 > ");
 }
 
-static void shell64_print_help(void) {
-    k64_print("Commands:\n");
-    k64_print("  help          - show this help\n");
-    k64_print("  about         - show kernel info\n");
-    k64_print("  clear / cls   - clear screen\n");
-    if (safe_mode64_disk_writes_allowed()) {
-        k64_print("  mkdir <path>  - create directory\n");
-        k64_print("  rm <path>     - remove file\n");
-        k64_print("  rmdir <path>  - remove empty directory\n");
-        k64_print("  echo \"TEXT\" >> <path> - append text to file\n");
-    } else {
-        k64_print("  mkdir <path>  - LOCKED by SAFE_HW\n");
-        k64_print("  rm <path>     - LOCKED by SAFE_HW\n");
-        k64_print("  rmdir <path>  - LOCKED by SAFE_HW\n");
-        k64_print("  echo \"TEXT\" >> <path> - LOCKED by SAFE_HW\n");
+static int shell64_parse_u64(const char* s, nq_u64* out) {
+    nq_u64 value = 0;
+    int any = 0;
+    int base = 10;
+
+    if (!s || !out) {
+        return 0;
     }
-    k64_print("  echo <text>   - print text\n");
-    k64_print("  ls            - list root directory\n");
-    k64_print("  ls <path>     - list directory/file\n");
-    k64_print("  cat <file>    - print text file\n");
-    k64_print("  panic         - trigger invalid opcode exception\n");
-    k64_print("  ticks         - show timer ticks\n");
-    k64_print("  uptime        - show uptime in seconds\n");
-    k64_print("  mem           - show memory map + PMM summary\n");
-    k64_print("  pmm           - show physical memory manager summary\n");
-    k64_print("  paging        - show paging summary\n");
-    k64_print("  heap          - show heap summary\n");
-    k64_print("  heaptest      - allocate/free test blocks\n");
-    k64_print("  block         - show block device info\n");
-    k64_print("  blockdump <n> - dump first 128 bytes of sector n\n");
-    k64_print("  fs            - show filesystem info\n");
-    k64_print("  norm <path>   - show normalized VFS path\n");
-    k64_print("  fb            - show framebuffer info\n");
-    k64_print("  nimg <file>   - draw centered NIMG image\n");
-    k64_print("  splash        - draw /boot/splash.ni if present\n");
-    k64_print("  term          - show terminal/session info\n");
-    k64_print("  ps            - show kernel tasks\n");
-    k64_print("  proctest      - create two cooperative test tasks\n");
-    k64_print("  sched         - show scheduler status\n");
-    k64_print("  sched on      - enable timer preemption\n");
-    k64_print("  sched off     - disable timer preemption\n");
-    k64_print("  sched stat    - show scheduler status\n");
-    k64_print("  busytest      - create CPU-bound preemption test tasks\n");
-    k64_print("  usertest      - enter ring 3 iretq test\n");
-    k64_print("  apptest       - spawn /apps/HELLO.ELF as process64 task\n");
-    k64_print("  run <file>    - spawn and run ELF64 app\n");
-    k64_print("  spawn <file>  - spawn ELF64 app as task\n");
-    k64_print("  kill <pid>    - kill task/process\n");
-    k64_print("  view <pid>    - view process terminal\n");
-    k64_print("  fg <pid>      - foreground process terminal\n");
-    k64_print("  vmem          - show virtual memory layout\n");
-    k64_print("  safemode      - show SAFE_HW status\n");
-    k64_print("  disklock      - lock disk writes\n");
-    k64_print("  diskunlock confirm - unlock disk writes in SAFE_HW mode\n");
-    k64_print("  reboot        - reboot machine\n");
-    k64_print("  shutdown      - power off emulator\n");
+
+    s = skip_spaces(s);
+
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        base = 16;
+        s += 2;
+    }
+
+    while (*s) {
+        char c = *s;
+        nq_u64 digit;
+
+        if (c >= '0' && c <= '9') {
+            digit = (nq_u64)(c - '0');
+        } else if (base == 16 && c >= 'a' && c <= 'f') {
+            digit = (nq_u64)(10 + c - 'a');
+        } else if (base == 16 && c >= 'A' && c <= 'F') {
+            digit = (nq_u64)(10 + c - 'A');
+        } else if (c == ' ' || c == '\t') {
+            break;
+        } else {
+            return 0;
+        }
+
+        if (digit >= (nq_u64)base) {
+            return 0;
+        }
+
+        value = value * (nq_u64)base + digit;
+        any = 1;
+        s++;
+    }
+
+    if (!any) {
+        return 0;
+    }
+
+    *out = value;
+    return 1;
+}
+
+static void shell64_print_help(const char* page_arg) {
+    nq_u64 page_num = 0;
+
+    page_arg = skip_spaces(page_arg);
+
+    if (!page_arg || !page_arg[0]) {
+        k64_print("Usage: help <page>\n");
+        k64_print("Use help 0 to see all pages.\n");
+        return;
+    }
+
+    if (!shell64_parse_u64(page_arg, &page_num)) {
+        k64_print("help: invalid page number\n");
+        return;
+    }
+
+    if (page_num == 0) {
+        k64_print("KER64 Shell Help\n");
+        k64_print("Usage: help <page>\n");
+        k64_print("Pages:\n");
+        k64_print("  1 - basic commands\n");
+        k64_print("  2 - system info commands\n");
+        k64_print("  3 - graphics, filesystem, process commands\n");
+        k64_print("  4 - multitasking and usermode commands\n");
+        k64_print("  5 - SAFE_HW and block device commands\n");
+        return;
+    }
+
+    if (page_num > 5) {
+        k64_print("help: page number out of range\n");
+        return;
+    }
+
+    k64_print("Commands:\n");
+    if (page_num == 1) {
+        k64_print("  help          - show this help\n");
+        k64_print("  about         - show kernel info\n");
+        k64_print("  clear / cls   - clear screen\n");
+        if (safe_mode64_disk_writes_allowed()) {
+            k64_print("  mkdir <path>  - create directory\n");
+            k64_print("  rm <path>     - remove file\n");
+            k64_print("  rmdir <path>  - remove empty directory\n");
+            k64_print("  echo \"TEXT\" >> <path> - append text to file\n");
+        } else {
+            k64_print("  mkdir <path>  - LOCKED by SAFE_HW\n");
+            k64_print("  rm <path>     - LOCKED by SAFE_HW\n");
+            k64_print("  rmdir <path>  - LOCKED by SAFE_HW\n");
+            k64_print("  echo \"TEXT\" >> <path> - LOCKED by SAFE_HW\n");
+        }
+        k64_print("  echo <text>   - print text\n");
+        k64_print("  ls            - list root directory\n");
+        k64_print("  ls <path>     - list directory/file\n");
+        k64_print("  cat <file>    - print text file\n");
+    }
+    else if (page_num == 2) {
+        k64_print("  panic         - trigger invalid opcode exception\n");
+        k64_print("  ticks         - show timer ticks\n");
+        k64_print("  uptime        - show uptime in seconds\n");
+        k64_print("  mem           - show memory map + PMM summary\n");
+        k64_print("  pmm           - show physical memory manager summary\n");
+        k64_print("  paging        - show paging summary\n");
+        k64_print("  heap          - show heap summary\n");
+        k64_print("  heaptest      - allocate/free test blocks\n");
+        k64_print("  block         - show block device info\n");
+        k64_print("  blockdump <n> - dump first 128 bytes of sector n\n");
+        k64_print("  diag          - show boot/runtime diagnostics\n");
+    }
+    else if (page_num == 3)
+    {
+        k64_print("  fs            - show filesystem info\n");
+        k64_print("  norm <path>   - show normalized VFS path\n");
+        k64_print("  fb            - show framebuffer info\n");
+        k64_print("  nimg <file>   - draw centered NIMG image\n");
+        k64_print("  splash        - draw /boot/splash.ni if present\n");
+        k64_print("  term          - show terminal/session info\n");
+        k64_print("  ps            - show kernel tasks\n");
+        k64_print("  proctest      - create two cooperative test tasks\n");
+        k64_print("  sched         - show scheduler status\n");
+        k64_print("  sched on      - enable timer preemption\n");
+        k64_print("  sched off     - disable timer preemption\n");
+        k64_print("  sched stat    - show scheduler status\n");
+    }
+    else if (page_num == 4) {
+        k64_print("  busytest      - create CPU-bound preemption test tasks\n");
+        k64_print("  usertest      - enter ring 3 iretq test\n");
+        k64_print("  apptest       - spawn /apps/HELLO.ELF as process64 task\n");
+        k64_print("  run <file>    - spawn and run ELF64 app\n");
+        k64_print("  spawn <file>  - spawn ELF64 app as task\n");
+        k64_print("  kill <pid>    - kill task/process\n");
+        k64_print("  view <pid>    - view process terminal\n");
+        k64_print("  fg <pid>      - foreground process terminal\n");
+        k64_print("  vmem          - show virtual memory layout\n");
+    }
+    else if (page_num == 5) {
+        k64_print("  safemode           - show SAFE_HW status\n");
+        k64_print("  disklock           - lock disk writes\n");
+        k64_print("  diskunlock confirm - unlock disk writes in SAFE_HW mode\n");
+        k64_print("  blkdev             - show block devices\n");
+        k64_print("  reboot             - reboot machine\n");
+        k64_print("  shutdown           - power off emulator\n");
+    }
 }
 
 static void shell64_norm_path(const char* path) {
@@ -511,55 +605,6 @@ static void shell64_start_busy_test(void) {
     k64_print("\n");
 
     k64_print("Run 'preempton' to let timer IRQs preempt them.\n");
-}
-
-static int shell64_parse_u64(const char* s, nq_u64* out) {
-    nq_u64 value = 0;
-    int any = 0;
-    int base = 10;
-
-    if (!s || !out) {
-        return 0;
-    }
-
-    s = skip_spaces(s);
-
-    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
-        base = 16;
-        s += 2;
-    }
-
-    while (*s) {
-        char c = *s;
-        nq_u64 digit;
-
-        if (c >= '0' && c <= '9') {
-            digit = (nq_u64)(c - '0');
-        } else if (base == 16 && c >= 'a' && c <= 'f') {
-            digit = (nq_u64)(10 + c - 'a');
-        } else if (base == 16 && c >= 'A' && c <= 'F') {
-            digit = (nq_u64)(10 + c - 'A');
-        } else if (c == ' ' || c == '\t') {
-            break;
-        } else {
-            return 0;
-        }
-
-        if (digit >= (nq_u64)base) {
-            return 0;
-        }
-
-        value = value * (nq_u64)base + digit;
-        any = 1;
-        s++;
-    }
-
-    if (!any) {
-        return 0;
-    }
-
-    *out = value;
-    return 1;
 }
 
 static void shell64_spawn_app(const char* path) {
@@ -855,8 +900,8 @@ static void shell64_execute_command(void) {
         return;
     }
 
-    if (str_eq(arg, "help")) {
-        shell64_print_help();
+    if (str_starts_with(arg, "help")) {
+        shell64_print_help(arg + 5);
     }
     else if (str_eq(arg, "about") || str_eq(arg, "version")) {
         shell64_print_about();
@@ -966,6 +1011,12 @@ static void shell64_execute_command(void) {
     else if (str_eq(arg, "fs")) {
         vfs64_print_summary();
     }
+    else if (str_eq(arg, "diag")) {
+        safe_mode64_print_status();
+        vfs64_print_summary();
+        block64_print_devices();
+        process64_print_summary();
+    }
     else if (str_starts_with(arg, "norm ")) {
         shell64_norm_path(arg + 5);
     }
@@ -982,7 +1033,7 @@ static void shell64_execute_command(void) {
         terminal64_print_summary();
     }
     else if (str_eq(arg, "ps")) {
-    process64_print_summary();
+        process64_print_summary();
     }
     else if (str_eq(arg, "proctest")) {
         shell64_start_process_test();
@@ -1030,6 +1081,13 @@ static void shell64_execute_command(void) {
     }
     else if (str_eq(arg, "disklock")) {
         safe_mode64_lock_disk_writes();
+
+        const block64_device_t* bootdev = block64_boot_device();
+
+        if (bootdev) {
+            block64_lock_writes(bootdev->id);
+        }
+
         k64_print("Disk writes locked.\n");
     }
     else if (str_eq(arg, "diskunlock confirm")) {
@@ -1039,11 +1097,26 @@ static void shell64_execute_command(void) {
 
         safe_mode64_unlock_disk_writes();
 
-        k64_print("Disk writes are now UNLOCKED.\n");
+        const block64_device_t* bootdev = block64_boot_device();
+
+        if (bootdev) {
+            if (block64_unlock_writes(bootdev->id)) {
+                k64_print("Unlocked writes for block device: ");
+                k64_print(bootdev->name);
+                k64_print("\n");
+            } else {
+                k64_print("Could not unlock boot block device.\n");
+            }
+        }
+
+        k64_print("Disk writes are now UNLOCKED where permitted.\n");
     }
     else if (str_starts_with(arg, "diskunlock")) {
         k64_print("Usage: diskunlock confirm\n");
         k64_print("WARNING: this allows disk writes on real hardware.\n");
+    }
+    else if (str_eq(arg, "blkdev")) {
+        block64_print_devices();
     }
     else if (str_eq(arg, "reboot")) {
         k64_print("Rebooting...\n");

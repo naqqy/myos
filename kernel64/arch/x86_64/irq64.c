@@ -5,6 +5,7 @@
 #include "../../k64_console.h"
 #include "../../input/kinput64.h"
 #include "../../proc/process64.h"
+#include "../../debug/bootlog64.h"
 
 #define PIC1_COMMAND 0x20
 #define PIC1_DATA    0x21
@@ -184,5 +185,5 @@ void irq64_init(nq_u32 timer_hz) {
     pic_unmask_irq(0);
     pic_unmask_irq(1);
 
-    k64_print("IRQ64 initialized: PIC + PIT + keyboard.\n");
+    bootlog64_print("IRQ64 initialized: PIC + PIT + keyboard.\n");
 }

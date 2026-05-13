@@ -3,16 +3,13 @@
 #include "initrd64.h"
 #include "../k64_console.h"
 #include "../safety/safe_mode64.h"
+#include "../debug/bootlog64.h"
 
 static int g_vfs_mounted = 0;
-
-typedef enum vfs64_backend {
-    VFS64_BACKEND_NONE = 0,
-    VFS64_BACKEND_FAT32,
-    VFS64_BACKEND_INITRD
-} vfs64_backend_t;
-
 static vfs64_backend_t g_vfs_backend = VFS64_BACKEND_NONE;
+
+static int g_initrd_mount_available = 0;
+static int g_fat32_mount_available = 0;
 
 static int is_sep(char c) {
     return c == '/' || c == '\\';
@@ -140,6 +137,108 @@ static void remove_last_component(char* output, nq_u64* out_len) {
     *out_len = len - 1;
 }
 
+static int str_starts_with(const char* s, const char* prefix) {
+    if (!s || !prefix) {
+        return 0;
+    }
+
+    while (*prefix) {
+        if (*s != *prefix) {
+            return 0;
+        }
+
+        s++;
+        prefix++;
+    }
+
+    return 1;
+}
+
+const char* vfs64_backend_name(vfs64_backend_t backend) {
+    switch (backend) {
+        case VFS64_BACKEND_FAT32:
+            return "FAT32";
+
+        case VFS64_BACKEND_INITRD:
+            return "INITRD";
+
+        case VFS64_BACKEND_NONE:
+        default:
+            return "NONE";
+    }
+}
+
+vfs64_backend_t vfs64_root_backend(void) {
+    return g_vfs_backend;
+}
+
+int vfs64_safe_mode_root_policy(void) {
+    return safe_mode64_enabled();
+}
+
+static vfs64_backend_t vfs64_pick_backend_for_path(
+    const char* normalized,
+    const char** out_backend_path
+) {
+    if (out_backend_path) {
+        *out_backend_path = normalized;
+    }
+
+    if (!normalized) {
+        return VFS64_BACKEND_NONE;
+    }
+
+    /*
+     * /initrd maps to INITRD if available.
+     * /initrd/docs/readme.txt becomes /docs/readme.txt inside initrd.
+     */
+    if (str_starts_with(normalized, "/initrd")) {
+        if (!initrd64_available()) {
+            return VFS64_BACKEND_NONE;
+        }
+
+        const char* sub = normalized + 7;
+
+        if (!sub[0]) {
+            sub = "/";
+        }
+
+        if (out_backend_path) {
+            *out_backend_path = sub;
+        }
+
+        return VFS64_BACKEND_INITRD;
+    }
+
+    /*
+     * /disk maps to FAT32 only outside SAFE_HW mode.
+     * In SAFE_HW, /disk is intentionally disabled for now.
+     */
+    if (str_starts_with(normalized, "/disk")) {
+        if (safe_mode64_enabled()) {
+            return VFS64_BACKEND_NONE;
+        }
+
+        if (!g_fat32_mount_available) {
+            return VFS64_BACKEND_NONE;
+        }
+
+        const char* sub = normalized + 5;
+
+        if (!sub[0]) {
+            sub = "/";
+        }
+
+        if (out_backend_path) {
+            *out_backend_path = sub;
+        }
+
+        return VFS64_BACKEND_FAT32;
+    }
+
+    return g_vfs_backend;
+}
+
 int vfs64_normalize_path(const char* input, char* output, nq_u64 output_size) {
     const char* p;
     nq_u64 out_len = 0;
@@ -217,36 +316,60 @@ int vfs64_mount_root(void) {
     g_vfs_mounted = 0;
     g_vfs_backend = VFS64_BACKEND_NONE;
 
+    g_initrd_mount_available = initrd64_available();
+    g_fat32_mount_available = 0;
+
+    /*
+     * SAFE_HW policy:
+     *
+     * Do not probe/mount unknown disks.
+     * Root must come from INITRD.
+     *
+     * main.c should already skip block64_init() in SAFE_HW mode,
+     * but this keeps VFS strict too.
+     */
     if (safe_mode64_enabled()) {
-        if (initrd64_available()) {
+        if (g_initrd_mount_available) {
             g_vfs_mounted = 1;
             g_vfs_backend = VFS64_BACKEND_INITRD;
-            k64_print("vfs64: mounted INITRD root due to SAFE_HW mode\n");
+
+            bootlog64_print("vfs64: SAFE_HW root policy active\n");
+            bootlog64_print("vfs64: mounted / as INITRD\n");
+            bootlog64_print("vfs64: /disk disabled in SAFE_HW mode\n");
+
             return 1;
         }
 
-        /*
-         * Fallback: FAT32 read-only behavior is acceptable, but writes
-         * remain blocked by block64_write().
-         */
-        g_vfs_mounted = 1;
-        g_vfs_backend = VFS64_BACKEND_FAT32;
-        k64_print("vfs64: mounted FAT32 root read-only due to SAFE_HW mode\n");
-        return 1;
+        k64_print("vfs64: SAFE_HW enabled but INITRD is unavailable\n");
+        return 0;
     }
 
     /*
-     * Normal/dev behavior.
+     * Dev/QEMU policy:
+     *
+     * Prefer FAT32 as root because it supports QEMU disk testing.
+     * Fall back to INITRD if no disk is available.
      */
     if (fat32_64_init(0)) {
         g_vfs_mounted = 1;
         g_vfs_backend = VFS64_BACKEND_FAT32;
+        g_fat32_mount_available = 1;
+
+        bootlog64_print("vfs64: mounted / as FAT32\n");
+
+        if (g_initrd_mount_available) {
+            bootlog64_print("vfs64: INITRD available at /initrd policy path later\n");
+        }
+
         return 1;
     }
 
-    if (initrd64_available()) {
+    if (g_initrd_mount_available) {
         g_vfs_mounted = 1;
         g_vfs_backend = VFS64_BACKEND_INITRD;
+
+        bootlog64_print("vfs64: mounted / as INITRD fallback\n");
+
         return 1;
     }
 
@@ -258,26 +381,33 @@ int vfs64_mounted(void) {
 }
 
 void vfs64_print_summary(void) {
-    k64_print("VFS64: ");
+    k64_print("VFS64:\n");
 
-    if (!g_vfs_mounted) {
-        k64_print("not mounted\n");
-        return;
+    k64_print("  mounted: ");
+    k64_print(g_vfs_mounted ? "yes\n" : "no\n");
+
+    k64_print("  root backend: ");
+    k64_print(vfs64_backend_name(g_vfs_backend));
+    k64_print("\n");
+
+    k64_print("  policy: ");
+    k64_print(safe_mode64_enabled() ? "SAFE_HW\n" : "DEV/QEMU\n");
+
+    k64_print("  /initrd: ");
+    k64_print(initrd64_available() ? "available\n" : "unavailable\n");
+
+    k64_print("  /disk: ");
+    if (safe_mode64_enabled()) {
+        k64_print("disabled by SAFE_HW\n");
+    } else {
+        k64_print(g_fat32_mount_available ? "FAT32 available\n" : "unavailable\n");
     }
-
-    k64_print("root mounted\n");
-    if (g_vfs_backend == VFS64_BACKEND_FAT32) {
-        k64_print("Root backend: FAT32\n");
-    } else if (g_vfs_backend == VFS64_BACKEND_INITRD) {
-        k64_print("Root backend: INITRD\n");
-    }
-    k64_print("Path normalization: enabled\n");
-
-    fat32_64_print_summary();
 }
 
 int vfs64_list_dir(const char* path) {
     char normalized[VFS64_MAX_PATH];
+    const char* backend_path = 0;
+    vfs64_backend_t backend;
 
     if (!g_vfs_mounted) {
         k64_print("vfs64: root filesystem not mounted\n");
@@ -289,12 +419,20 @@ int vfs64_list_dir(const char* path) {
         return 0;
     }
 
-    if (g_vfs_backend == VFS64_BACKEND_FAT32) {
-        return fat32_64_list_path(normalized);
+    backend = vfs64_pick_backend_for_path(normalized, &backend_path);
+
+    if (backend == VFS64_BACKEND_INITRD) {
+        return initrd64_list_path(backend_path);
     }
 
-    if (g_vfs_backend == VFS64_BACKEND_INITRD) {
-        return initrd64_list_path(normalized);
+    if (backend == VFS64_BACKEND_FAT32) {
+        return fat32_64_list_path(backend_path);
+    }
+
+    if (safe_mode64_enabled() && str_starts_with(normalized, "/disk")) {
+        k64_print("vfs64: /disk is disabled in SAFE_HW mode\n");
+    } else {
+        k64_print("vfs64: no backend for path\n");
     }
 
     return 0;
@@ -307,17 +445,11 @@ int vfs64_read_file(
     nq_u64* out_size
 ) {
     char normalized[VFS64_MAX_PATH];
-
-    if (out_size) {
-        *out_size = 0;
-    }
+    const char* backend_path = 0;
+    vfs64_backend_t backend;
 
     if (!g_vfs_mounted) {
         k64_print("vfs64: root filesystem not mounted\n");
-        return 0;
-    }
-
-    if (!out_buf || max_bytes == 0) {
         return 0;
     }
 
@@ -326,22 +458,30 @@ int vfs64_read_file(
         return 0;
     }
 
-    if (g_vfs_backend == VFS64_BACKEND_FAT32) {
+    backend = vfs64_pick_backend_for_path(normalized, &backend_path);
+
+    if (backend == VFS64_BACKEND_INITRD) {
+        return initrd64_read_file(
+            backend_path,
+            out_buf,
+            max_bytes,
+            out_size
+        );
+    }
+
+    if (backend == VFS64_BACKEND_FAT32) {
         return fat32_64_read_file_path(
-            normalized,
+            backend_path,
             (nq_u8*)out_buf,
             max_bytes,
             out_size
         );
     }
 
-    if (g_vfs_backend == VFS64_BACKEND_INITRD) {
-        return initrd64_read_file(
-            normalized,
-            out_buf,
-            max_bytes,
-            out_size
-        );
+    if (safe_mode64_enabled() && str_starts_with(normalized, "/disk")) {
+        k64_print("vfs64: /disk is disabled in SAFE_HW mode\n");
+    } else {
+        k64_print("vfs64: no backend for path\n");
     }
 
     return 0;
@@ -352,6 +492,11 @@ int vfs64_write_file(
     const void* data,
     nq_u64 size
 ) {
+    if (safe_mode64_enabled()) {
+        k64_print("vfs64: write blocked by SAFE_HW mount policy\n");
+        return 0;
+    }
+
     if (g_vfs_backend != VFS64_BACKEND_FAT32) {
         k64_print("vfs64: root filesystem is read-only\n");
         return 0;
@@ -381,6 +526,11 @@ int vfs64_write_file(
 }
 
 int vfs64_mkdir(const char* path) {
+    if (safe_mode64_enabled()) {
+        k64_print("vfs64: write blocked by SAFE_HW mount policy\n");
+        return 0;
+    }
+
     if (g_vfs_backend != VFS64_BACKEND_FAT32) {
         k64_print("vfs64: root filesystem is read-only\n");
         return 0;
@@ -402,6 +552,11 @@ int vfs64_mkdir(const char* path) {
 }
 
 int vfs64_rm(const char* path) {
+    if (safe_mode64_enabled()) {
+        k64_print("vfs64: write blocked by SAFE_HW mount policy\n");
+        return 0;
+    }
+
     if (g_vfs_backend != VFS64_BACKEND_FAT32) {
         k64_print("vfs64: root filesystem is read-only\n");
         return 0;
@@ -423,6 +578,11 @@ int vfs64_rm(const char* path) {
 }
 
 int vfs64_rmdir(const char* path) {
+    if (safe_mode64_enabled()) {
+        k64_print("vfs64: write blocked by SAFE_HW mount policy\n");
+        return 0;
+    }
+
     if (g_vfs_backend != VFS64_BACKEND_FAT32) {
         k64_print("vfs64: root filesystem is read-only\n");
         return 0;

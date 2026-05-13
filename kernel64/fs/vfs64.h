@@ -30,4 +30,15 @@ int vfs64_mkdir(const char* path);
 int vfs64_rm(const char* path);
 int vfs64_rmdir(const char* path);
 
+typedef enum vfs64_backend {
+    VFS64_BACKEND_NONE = 0,
+    VFS64_BACKEND_FAT32,
+    VFS64_BACKEND_INITRD
+} vfs64_backend_t;
+
+vfs64_backend_t vfs64_root_backend(void);
+const char* vfs64_backend_name(vfs64_backend_t backend);
+
+int vfs64_safe_mode_root_policy(void);
+
 #endif

@@ -146,29 +146,30 @@ show warning before disk write unlock
 add command: safemode
 add command: diskunlock confirm
 
-35 Add safer VFS mount policy. // HIGH PRIORITY TODO
+35 Add safer VFS mount policy. // DONE POC
 mount INITRD as default root on real hardware
 mount FAT32 read-only unless explicitly requested
-support /initrd and /disk mount points later
+support /initrd and /disk mount policy paths
 prevent accidental writes to internal drives
 
-36 Add block64 read-only device safety layer. // HIGH PRIORITY TODO
+36 Add block64 read-only device safety layer. // DONE POC
 separate read-only and writable block devices
 add block64_device_t
 add device name/type fields
 protect writes unless device is explicitly unlocked
 add shell command to list block devices safely
 
-37 Add real-hardware boot diagnostics screen. // HIGH PRIORITY TODO
+37 Add real-hardware boot diagnostics screen. // DONE POC
 show SAFE_HW status
 show framebuffer mode
 show keyboard/input status
 show VFS backend: INITRD/FAT32
 show block devices detected but not mounted writable
-show memory map summary
+show memory map summary later
 show app/scheduler status
+quiet boot by default, verbose boot optional
 
-38 Add safe real-hardware release image target. // HIGH PRIORITY TODO
+38 Add safe real-hardware release image target. // DONE
 build.sh hardware-safe
 packs BOOTX64.EFI, KERNEL64.BIN, INITRD.NAQ
 SAFE_HW enabled by default
@@ -658,3 +659,10 @@ shared libc later if needed
 single-core is enough for now
 AP startup later
 scheduler SMP later
+
+Later: add minimal ACPI64 support. // TODO
+find RSDP from UEFI configuration table
+parse RSDT/XSDT
+find FADT
+support ACPI reset register
+support ACPI S5 shutdown later

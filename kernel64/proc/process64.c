@@ -5,6 +5,7 @@
 #include "../k64_console.h"
 #include "../arch/x86_64/gdt64.h"
 #include "../console/terminal64.h"
+#include "../debug/bootlog64.h"
 
 static process64_task_t g_tasks[PROCESS64_MAX_TASKS];
 static process64_task_t* g_current = 0;
@@ -170,7 +171,7 @@ void process64_init(void) {
     g_preempt_switches = 0;
     g_quantum_ticks = PROCESS64_DEFAULT_QUANTUM_TICKS;
 
-    k64_print("Process64 initialized.\n");
+    bootlog64_print("Process64 initialized.\n");
 }
 
 int process64_create_kernel_task(
