@@ -12,6 +12,8 @@ nq_u32 fb64_pixels_per_scanline(void);
 nq_u64 fb64_base(void);
 nq_u64 fb64_size(void);
 nq_u32 fb64_pixel_format(void);
+nq_u32 fb64_pitch(void);
+nq_u32 fb64_format(void);
 
 nq_u32 fb64_make_color(nq_u8 r, nq_u8 g, nq_u8 b);
 
@@ -37,6 +39,14 @@ void fb64_draw_xrgb32_row(
     nq_u32 y,
     const nq_u32* pixels,
     nq_u32 count
+);
+
+void fb64_blit_rgb32(
+    int dst_x,
+    int dst_y,
+    nq_u32 width,
+    nq_u32 height,
+    const nq_u32* pixels
 );
 
 void fb64_print_summary(void);

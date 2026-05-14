@@ -24,6 +24,29 @@
 
 #define PROCESS64_MAX_FILES 8
 
+#define PROCESS64_GFX_NONE   0
+#define PROCESS64_GFX_ACTIVE 1
+
+#define PROCESS64_GFX_MAX_WIDTH  320
+#define PROCESS64_GFX_MAX_HEIGHT 240
+
+typedef struct process64_gfx {
+    int mode;
+
+    nq_u32 width;
+    nq_u32 height;
+
+    nq_u32 frame_width;
+    nq_u32 frame_height;
+
+    int dst_x;
+    int dst_y;
+
+    nq_u32* buffer;
+    nq_u64 buffer_size;
+    int dirty;
+} process64_gfx_t;
+
 typedef struct process64_file {
     int used;
     char path[128];
@@ -64,6 +87,8 @@ typedef struct process64_task {
     nq_u32 input_tail;
 
     process64_file_t files[PROCESS64_MAX_FILES];
+
+    process64_gfx_t gfx;
 } process64_task_t;
 
 void process64_init(void);
@@ -113,6 +138,7 @@ void process64_wait_pid(nq_u32 pid);
 
 int process64_has_foreground_app(void);
 nq_u32 process64_foreground_pid(void);
+int process64_current_is_foreground(void);
 
 int process64_push_key_to_foreground(char c);
 int process64_input_poll_key(void);
@@ -126,5 +152,19 @@ int process64_file_open(const char* path, nq_u64 size);
 int process64_file_read(int handle, void* dst, nq_u64 max_bytes);
 int process64_file_close(int handle);
 process64_file_t* process64_file_from_handle(int handle);
+
+int process64_set_graphics_mode(nq_u32 mode);
+nq_u32 process64_get_graphics_mode(void);
+
+int process64_present_current_gfx(
+    const nq_u32* pixels,
+    nq_u32 width,
+    nq_u32 height,
+    int dst_x,
+    int dst_y
+);
+
+int process64_show_graphics(nq_u32 pid);
+int process64_task_has_graphics(nq_u32 pid);
 
 #endif

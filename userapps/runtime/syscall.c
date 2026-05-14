@@ -126,3 +126,55 @@ int close(int fd) {
 int stat(const char* path, naq_stat_t* out) {
     return (int)syscall2(SYS64_STAT, (u64)path, (u64)out);
 }
+
+int gfx_info(naq_gfx_info_t* out) {
+    return (int)syscall1(SYS64_GFX_INFO, (u64)out);
+}
+
+int gfx_clear(u32 color) {
+    return (int)syscall1(SYS64_GFX_CLEAR, (u64)color);
+}
+
+int gfx_draw_rect(i32 x, i32 y, i32 w, i32 h, u32 color) {
+    naq_gfx_rect_t r;
+
+    r.x = x;
+    r.y = y;
+    r.w = w;
+    r.h = h;
+    r.color = color;
+
+    return (int)syscall1(SYS64_GFX_DRAW_RECT, (u64)&r);
+}
+
+int gfx_present(const void* pixels, u32 width, u32 height) {
+    naq_gfx_blit_t b;
+
+    b.dst_x = 0;
+    b.dst_y = 0;
+    b.width = width;
+    b.height = height;
+    b.pixels = pixels;
+
+    return (int)syscall1(SYS64_GFX_PRESENT, (u64)&b);
+}
+
+int gfx_blit(i32 x, i32 y, const void* pixels, u32 width, u32 height) {
+    naq_gfx_blit_t b;
+
+    b.dst_x = x;
+    b.dst_y = y;
+    b.width = width;
+    b.height = height;
+    b.pixels = pixels;
+
+    return (int)syscall1(SYS64_GFX_BLIT, (u64)&b);
+}
+
+int gfx_set_mode(u32 mode) {
+    return (int)syscall1(SYS64_GFX_SET_MODE, mode);
+}
+
+u32 gfx_get_mode(void) {
+    return (u32)syscall0(SYS64_GFX_GET_MODE);
+}

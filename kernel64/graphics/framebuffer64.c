@@ -59,16 +59,24 @@ nq_u32 fb64_pixels_per_scanline(void) {
     return g_fb_available ? g_boot->framebuffer_pixels_per_scanline : 0;
 }
 
+nq_u32 fb64_pitch(void) {
+    return fb64_pixels_per_scanline();
+}
+
+nq_u32 fb64_pixel_format(void) {
+    return g_fb_available ? g_boot->framebuffer_pixel_format : 0;
+}
+
+nq_u32 fb64_format(void) {
+    return fb64_pixel_format();
+}
+
 nq_u64 fb64_base(void) {
     return g_fb_available ? g_boot->framebuffer_base : 0;
 }
 
 nq_u64 fb64_size(void) {
     return g_fb_available ? g_boot->framebuffer_size : 0;
-}
-
-nq_u32 fb64_pixel_format(void) {
-    return g_fb_available ? g_boot->framebuffer_pixel_format : 0;
 }
 
 nq_u32 fb64_make_color(nq_u8 r, nq_u8 g, nq_u8 b) {
@@ -277,4 +285,66 @@ void fb64_print_summary(void) {
     k64_print("Pixel format: ");
     k64_print_dec64(g_boot->framebuffer_pixel_format);
     k64_print("\n");
+}
+
+void fb64_blit_rgb32(
+    int dst_x,
+    int dst_y,
+    nq_u32 width,
+    nq_u32 height,
+    const nq_u32* pixels
+) {
+    if (!pixels || !fb64_available() || width == 0 || height == 0) {
+        return;
+    }
+
+    int src_x0 = 0;
+    int src_y0 = 0;
+    int draw_w = (int)width;
+    int draw_h = (int)height;
+
+    if (dst_x < 0) {
+        src_x0 = -dst_x;
+        draw_w -= src_x0;
+        dst_x = 0;
+    }
+
+    if (dst_y < 0) {
+        src_y0 = -dst_y;
+        draw_h -= src_y0;
+        dst_y = 0;
+    }
+
+    if (dst_x + draw_w > (int)fb64_width()) {
+        draw_w = (int)fb64_width() - dst_x;
+    }
+
+    if (dst_y + draw_h > (int)fb64_height()) {
+        draw_h = (int)fb64_height() - dst_y;
+    }
+
+    if (draw_w <= 0 || draw_h <= 0) {
+        return;
+    }
+
+    volatile nq_u32* fb = (volatile nq_u32*)fb64_base();
+    nq_u32 pitch = fb64_pixels_per_scanline();
+
+    for (int y = 0; y < draw_h; y++) {
+        volatile nq_u32* dst =
+            fb + ((nq_u64)(dst_y + y) * pitch) + dst_x;
+
+        const nq_u32* src =
+            pixels + ((nq_u64)(src_y0 + y) * width) + src_x0;
+
+        for (int x = 0; x < draw_w; x++) {
+            nq_u32 raw = src[x];
+
+            nq_u8 r = (nq_u8)((raw >> 16) & 0xFFu);
+            nq_u8 g = (nq_u8)((raw >> 8) & 0xFFu);
+            nq_u8 b = (nq_u8)(raw & 0xFFu);
+
+            dst[x] = fb64_make_color(r, g, b);
+        }
+    }
 }

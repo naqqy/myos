@@ -17,6 +17,13 @@
 #define SYS64_READ            9
 #define SYS64_CLOSE           10
 #define SYS64_STAT            11
+#define SYS64_GFX_INFO       12
+#define SYS64_GFX_CLEAR      13
+#define SYS64_GFX_PRESENT    14
+#define SYS64_GFX_DRAW_RECT  15
+#define SYS64_GFX_BLIT       16
+#define SYS64_GFX_SET_MODE   17
+#define SYS64_GFX_GET_MODE   18
 
 typedef struct naq_stat {
     nq_u64 size;

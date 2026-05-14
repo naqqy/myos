@@ -5,6 +5,10 @@ typedef unsigned char       nq_u8;
 typedef unsigned short      nq_u16;
 typedef unsigned int        nq_u32;
 typedef unsigned long long  nq_u64;
+typedef signed char        nq_s8;
+typedef signed short       nq_s16;
+typedef signed int         nq_s32;
+typedef signed long long   nq_s64;
 
 #define NAQ_BOOT_INFO_MAGIC   0x314F464E4951424EULL  /* "NBINFO1" marker */
 #define NAQ_BOOT_INFO_VERSION 1u

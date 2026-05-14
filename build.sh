@@ -828,6 +828,54 @@ build_kernel64() {
 # User apps / assets / INITRD
 # ============================================================
 
+build_game_assets() {
+  msg "Building game assets"
+
+  local src_dir="assets/game"
+  local dst_dir="$INITRD_FS_DIR/assets/game"
+
+  mkdir -p "$dst_dir"
+
+  if [[ ! -d "$src_dir" ]]; then
+    echo "No assets/game directory; skipping game assets."
+    return 0
+  fi
+
+  if [[ ! -f "$NIMG_TOOL" ]]; then
+    echo "Warning: $NIMG_TOOL not found; PNG game assets cannot be converted." >&2
+  fi
+
+  while IFS= read -r -d '' file; do
+    local rel
+    local ext
+    local lower_ext
+    local out
+
+    rel="${file#$src_dir/}"
+    ext="${rel##*.}"
+    lower_ext="$(printf '%s' "$ext" | tr 'A-Z' 'a-z')"
+
+    if [[ "$lower_ext" == "png" ]]; then
+      if [[ ! -f "$NIMG_TOOL" ]]; then
+        echo "Skipping PNG game asset because converter is missing: $rel" >&2
+        continue
+      fi
+
+      out="$dst_dir/${rel%.*}.ni"
+      mkdir -p "$(dirname "$out")"
+
+      msg "Converting game asset $file -> $out"
+      "$PYTHON3" "$NIMG_TOOL" "$file" "$out"
+    else
+      out="$dst_dir/$rel"
+      mkdir -p "$(dirname "$out")"
+
+      msg "Copying game asset $file -> $out"
+      cp "$file" "$out"
+    fi
+  done < <(find "$src_dir" -type f -print0)
+}
+
 build_userapps() {
   msg "Building 64-bit ELF user apps"
 
@@ -847,11 +895,13 @@ build_userapps() {
   local runtime_syscall="$USERAPPS_DIR/runtime/syscall.c"
   local runtime_string="$USERAPPS_DIR/runtime/string.c"
   local runtime_time="$USERAPPS_DIR/runtime/time.c"
+  local runtime_gfx="$USERAPPS_DIR/runtime/gfx.c"
 
-  local runtime_crt0_obj="$USERAPPS_BUILD_DIR/crt0.o"
-  local runtime_syscall_obj="$USERAPPS_BUILD_DIR/syscall.o"
-  local runtime_string_obj="$USERAPPS_BUILD_DIR/string.o"
-  local runtime_time_obj="$USERAPPS_BUILD_DIR/time.o"
+  local runtime_crt0_obj="$USERAPPS_BUILD_DIR/runtime_crt0.o"
+  local runtime_syscall_obj="$USERAPPS_BUILD_DIR/runtime_syscall.o"
+  local runtime_string_obj="$USERAPPS_BUILD_DIR/runtime_string.o"
+  local runtime_time_obj="$USERAPPS_BUILD_DIR/runtime_time.o"
+  local runtime_gfx_obj="$USERAPPS_BUILD_DIR/runtime_gfx.o"
 
   if [[ -f "$runtime_crt0" ]]; then
     "$GCC" \
@@ -903,6 +953,19 @@ build_userapps() {
       -nostdlib \
       -c "$runtime_time" \
       -o "$runtime_time_obj"
+  fi
+
+  if [[ -f "$runtime_gfx" ]]; then
+    "$GCC" \
+      -m64 \
+      -I"$USERAPPS_DIR/include" \
+      -ffreestanding \
+      -fno-pie \
+      -fno-stack-protector \
+      -mno-red-zone \
+      -nostdlib \
+      -c "$runtime_gfx" \
+      -o "$runtime_gfx_obj"
   fi
 
   local found=0
@@ -975,7 +1038,8 @@ build_userapps() {
       "$obj" \
       "$runtime_syscall_obj" \
       "$runtime_string_obj" \
-      "$runtime_time_obj"
+      "$runtime_time_obj" \
+      "$runtime_gfx_obj"
 
     "$OBJCOPY" --strip-debug "$out" "$out"
   done < <(find "$USERAPPS_DIR" -maxdepth 1 -type f -name '*.c' -print0)
@@ -1080,6 +1144,8 @@ build_initrd() {
   fi
 
   mkdir -p "$INITRD_FS_DIR/apps"
+
+  build_game_assets
 
   if [[ -d "$USERAPPS_BUILD_DIR" ]]; then
     while IFS= read -r -d '' app; do

@@ -8,6 +8,7 @@
 #include "../console/terminal64.h"
 #include "../debug/bootlog64.h"
 #include "../input/kinput64.h"
+#include "../graphics/framebuffer64.h"
 
 static process64_task_t g_tasks[PROCESS64_MAX_TASKS];
 static process64_task_t* g_current = 0;
@@ -824,6 +825,17 @@ static void process64_reap_task(process64_task_t* task) {
     }
 #endif
 
+    if (task->gfx.buffer) {
+        kfree64(task->gfx.buffer);
+        task->gfx.buffer = 0;
+    }
+
+    task->gfx.mode = PROCESS64_GFX_NONE;
+    task->gfx.width = 0;
+    task->gfx.height = 0;
+    task->gfx.buffer_size = 0;
+    task->gfx.dirty = 0;
+
     task->terminal = 0;
     task->terminal_id = 0;
     task->owns_terminal = 0;
@@ -997,4 +1009,150 @@ process64_file_t* process64_file_from_handle(int handle) {
     }
 
     return &task->files[idx];
+}
+
+int process64_set_graphics_mode(nq_u32 mode) {
+    process64_task_t* task = process64_current();
+
+    if (!task || task->pid == 0) {
+        return 0;
+    }
+
+    if (mode == 0) {
+        task->gfx.mode = PROCESS64_GFX_NONE;
+        return 1;
+    }
+
+    if (!task->gfx.buffer) {
+        task->gfx.width = PROCESS64_GFX_MAX_WIDTH;
+        task->gfx.height = PROCESS64_GFX_MAX_HEIGHT;
+        task->gfx.buffer_size =
+            (nq_u64)task->gfx.width *
+            (nq_u64)task->gfx.height *
+            sizeof(nq_u32);
+
+        task->gfx.buffer = (nq_u32*)kmalloc64(task->gfx.buffer_size);
+
+        if (!task->gfx.buffer) {
+            task->gfx.width = 0;
+            task->gfx.height = 0;
+            task->gfx.buffer_size = 0;
+            return 0;
+        }
+    }
+
+    task->gfx.mode = PROCESS64_GFX_ACTIVE;
+    task->gfx.dirty = 1;
+
+    /*
+    * If a foreground app switches into graphics mode, it now owns the
+    * visible framebuffer. Clear old KER64 terminal pixels immediately.
+    */
+    if (task->foreground) {
+        fb64_clear(fb64_make_color(8, 16, 28));
+    }
+
+    return 1;
+}
+
+int process64_present_current_gfx(
+    const nq_u32* pixels,
+    nq_u32 width,
+    nq_u32 height,
+    int dst_x,
+    int dst_y
+) {
+    process64_task_t* task = process64_current();
+
+    if (!task || !pixels) {
+        return 0;
+    }
+
+    if (task->gfx.mode != PROCESS64_GFX_ACTIVE) {
+        return 0;
+    }
+
+    if (!task->gfx.buffer) {
+        return 0;
+    }
+
+    if (width == 0 || height == 0) {
+        return 0;
+    }
+
+    if (width > task->gfx.width || height > task->gfx.height) {
+        return 0;
+    }
+
+    for (nq_u32 y = 0; y < height; y++) {
+        for (nq_u32 x = 0; x < width; x++) {
+            task->gfx.buffer[y * task->gfx.width + x] =
+                pixels[y * width + x];
+        }
+    }
+
+    task->gfx.frame_width = width;
+    task->gfx.frame_height = height;
+    task->gfx.dst_x = dst_x;
+    task->gfx.dst_y = dst_y;
+    task->gfx.dirty = 1;
+
+    return 1;
+}
+
+int process64_show_graphics(nq_u32 pid) {
+    process64_task_t* task = process64_find_by_pid(pid);
+
+    if (!task || !task->gfx.buffer ||
+        task->gfx.mode != PROCESS64_GFX_ACTIVE) {
+        return 0;
+    }
+
+    fb64_clear(fb64_make_color(8, 16, 28));
+
+    fb64_blit_rgb32(
+        task->gfx.dst_x,
+        task->gfx.dst_y,
+        task->gfx.frame_width ? task->gfx.frame_width : task->gfx.width,
+        task->gfx.frame_height ? task->gfx.frame_height : task->gfx.height,
+        task->gfx.buffer
+    );
+
+    return 1;
+}
+
+nq_u32 process64_get_graphics_mode(void) {
+    process64_task_t* task = process64_current();
+
+    if (!task) {
+        return PROCESS64_GFX_NONE;
+    }
+
+    return (nq_u32)task->gfx.mode;
+}
+
+int process64_task_has_graphics(nq_u32 pid) {
+    process64_task_t* task = process64_find_by_pid(pid);
+
+    if (!task) {
+        return 0;
+    }
+
+    if (task->state == PROCESS64_UNUSED) {
+        return 0;
+    }
+
+    if (task->gfx.mode != PROCESS64_GFX_ACTIVE) {
+        return 0;
+    }
+
+    if (!task->gfx.buffer) {
+        return 0;
+    }
+
+    return 1;
+}
+
+int process64_current_is_foreground(void) {
+    return g_current && g_current->foreground;
 }

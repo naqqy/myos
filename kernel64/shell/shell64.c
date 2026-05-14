@@ -37,6 +37,7 @@ static nq_u8 g_file_buffer[SHELL64_FILE_BUFFER_SIZE];
 
 static char g_input[SHELL64_INPUT_MAX];
 static unsigned int g_input_len = 0;
+static int g_shell64_graphics_view_active = 0;
 
 static int str_eq(const char* a, const char* b) {
     while (*a && *b) {
@@ -244,6 +245,10 @@ static void shell64_echo_append(const char* arg) {
 }
 
 static void shell64_prompt(void) {
+    if (g_shell64_graphics_view_active) {
+        return;
+    }
+
     k64_print("KER64 > ");
 }
 
@@ -650,10 +655,27 @@ static void shell64_run_app(const char* path) {
 
     /*
      * run keeps the current KER64 terminal.
-     * The shell waits until the foreground app exits, so app output appears
-     * directly in this terminal and the prompt returns afterward.
+     * The app is foreground because it was spawned with
+     * PROCESS64_SPAWN_FOREGROUND.
+     *
+     * Input works because foreground apps can pull directly from kinput64.
      */
     process64_wait_pid((nq_u32)pid);
+
+    /*
+    * Only clear if this app used graphics mode.
+    * Terminal-only apps should leave their output visible.
+    */
+    int was_graphical = process64_task_has_graphics((nq_u32)pid);
+
+    process64_foreground(0);
+    terminal64_switch(terminal64_kernel());
+
+    g_shell64_graphics_view_active = 0;
+
+    if (was_graphical) {
+        k64_clear_screen();
+    }
 }
 
 static void shell64_view_process(const char* pid_text) {
@@ -676,6 +698,29 @@ static void shell64_view_process(const char* pid_text) {
         k64_print("view: pid out of range\n");
         return;
     }
+
+    if (pid64 == 0) {
+        g_shell64_graphics_view_active = 0;
+
+        if (!process64_view_terminal(0)) {
+            k64_print("view: failed to return to shell terminal\n");
+        }
+
+        return;
+    }
+
+    if (process64_task_has_graphics((nq_u32)pid64)) {
+        if (!process64_show_graphics((nq_u32)pid64)) {
+            g_shell64_graphics_view_active = 0;
+            k64_print("view: failed to show app graphics\n");
+            return;
+        }
+
+        g_shell64_graphics_view_active = 1;
+        return;
+    }
+
+    g_shell64_graphics_view_active = 0;
 
     if (!process64_view_terminal((nq_u32)pid64)) {
         k64_print("view: no such process terminal\n");
@@ -703,9 +748,34 @@ static void shell64_fg_process(const char* pid_text) {
         return;
     }
 
-    if (!process64_foreground((nq_u32)pid64)) {
-        k64_print("fg: no such process\n");
+    if (pid64 == 0) {
+        g_shell64_graphics_view_active = 0;
+
+        if (!process64_foreground(0)) {
+            k64_print("fg: failed to return to shell\n");
+        }
+
+        return;
     }
+
+    if (!process64_foreground((nq_u32)pid64)) {
+        g_shell64_graphics_view_active = 0;
+        k64_print("fg: no such process\n");
+        return;
+    }
+
+    if (process64_task_has_graphics((nq_u32)pid64)) {
+        if (!process64_show_graphics((nq_u32)pid64)) {
+            g_shell64_graphics_view_active = 0;
+            k64_print("fg: failed to show app graphics\n");
+            return;
+        }
+
+        g_shell64_graphics_view_active = 1;
+        return;
+    }
+
+    g_shell64_graphics_view_active = 0;
 }
 
 static void shell64_kill_process(const char* pid_text) {

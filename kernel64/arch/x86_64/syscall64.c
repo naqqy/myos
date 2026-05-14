@@ -11,18 +11,55 @@
 
 #include "../../fs/vfs64.h"
 
+#include "../../graphics/framebuffer64.h"
+
 static int g_syscall64_initialized = 0;
 
 #define SYSCALL64_WRITE_CHUNK_SIZE 128u
 
 #define SYSCALL64_MAX_PATH 128
-#define SYSCALL64_FILE_TMP_SIZE 4096u
+#define SYSCALL64_FILE_TMP_SIZE 8192u
 
 static char g_syscall64_path_buf[SYSCALL64_MAX_PATH];
 static nq_u8 g_syscall64_file_tmp[SYSCALL64_FILE_TMP_SIZE];
 
+typedef struct syscall64_gfx_info {
+    nq_u32 width;
+    nq_u32 height;
+    nq_u32 pitch;
+    nq_u32 format;
+} syscall64_gfx_info_t;
+
+typedef struct syscall64_gfx_rect {
+    nq_s32 x;
+    nq_s32 y;
+    nq_s32 w;
+    nq_s32 h;
+    nq_u32 color;
+} syscall64_gfx_rect_t;
+
+typedef struct syscall64_gfx_blit {
+    nq_s32 dst_x;
+    nq_s32 dst_y;
+    nq_u32 width;
+    nq_u32 height;
+    const void* pixels;
+} syscall64_gfx_blit_t;
+
+#define SYSCALL64_GFX_MAX_BLIT_PIXELS (320u * 240u)
+
+static nq_u32 g_syscall64_gfx_tmp[SYSCALL64_GFX_MAX_BLIT_PIXELS];
+
 static nq_u64 syscall64_error(nq_u64 err) {
     return 0ull - err;
+}
+
+static nq_u32 syscall64_gfx_color_to_native(nq_u32 color) {
+    nq_u8 r = (nq_u8)((color >> 16) & 0xFFu);
+    nq_u8 g = (nq_u8)((color >> 8) & 0xFFu);
+    nq_u8 b = (nq_u8)(color & 0xFFu);
+
+    return fb64_make_color(r, g, b);
 }
 
 static nq_u64 syscall64_write(const char* user_s, nq_u64 max_len) {
@@ -400,6 +437,217 @@ void syscall64_handler(syscall64_frame_t* frame) {
             frame->rax = 0;
             break;
         }
+
+        case SYS64_GFX_INFO: {
+            syscall64_gfx_info_t info;
+            syscall64_gfx_info_t* user_info =
+                (syscall64_gfx_info_t*)frame->rdi;
+
+            if (!user_info) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            info.width = fb64_width();
+            info.height = fb64_height();
+            info.pitch = fb64_pitch();
+            info.format = fb64_format();
+
+            if (!usercopy64_copy_to_user(user_info, &info, sizeof(info))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            frame->rax = 0;
+            break;
+        }
+
+        case SYS64_GFX_CLEAR: {
+            nq_u32 color = (nq_u32)frame->rdi;
+
+            /*
+             * If this is a graphical app running in the background,
+             * do not touch the real framebuffer.
+             *
+             * For now, graphical apps should clear their own user backbuffer
+             * with gfx_buffer_clear().
+             */
+            if (process64_get_graphics_mode() == PROCESS64_GFX_ACTIVE &&
+                !process64_current_is_foreground()) {
+                frame->rax = 0;
+                break;
+            }
+
+            fb64_clear(syscall64_gfx_color_to_native(color));
+
+            frame->rax = 0;
+            break;
+        }
+
+        case SYS64_GFX_DRAW_RECT: {
+            syscall64_gfx_rect_t r;
+
+            if (!frame->rdi) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!usercopy64_copy_from_user(
+                    &r,
+                    (const void*)frame->rdi,
+                    sizeof(r))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (r.x < 0 || r.y < 0 || r.w <= 0 || r.h <= 0) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            /*
+             * Background graphical apps should not touch the real framebuffer.
+             * They should draw into their own user backbuffer and present it.
+             */
+            if (process64_get_graphics_mode() == PROCESS64_GFX_ACTIVE &&
+                !process64_current_is_foreground()) {
+                frame->rax = 0;
+                break;
+            }
+
+            fb64_fill_rect(
+                (nq_u32)r.x,
+                (nq_u32)r.y,
+                (nq_u32)r.w,
+                (nq_u32)r.h,
+                syscall64_gfx_color_to_native(r.color)
+            );
+
+            frame->rax = 0;
+            break;
+        }
+
+        case SYS64_GFX_PRESENT:
+        case SYS64_GFX_BLIT: {
+            syscall64_gfx_blit_t b;
+            nq_u64 pixel_count;
+            nq_u64 byte_count;
+            int is_graphics_app = 0;
+            int is_foreground = 0;
+
+            if (!frame->rdi) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!usercopy64_copy_from_user(
+                    &b,
+                    (const void*)frame->rdi,
+                    sizeof(b))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!b.pixels || b.width == 0 || b.height == 0) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            pixel_count = (nq_u64)b.width * (nq_u64)b.height;
+
+            if (pixel_count > SYSCALL64_GFX_MAX_BLIT_PIXELS) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            byte_count = pixel_count * sizeof(nq_u32);
+
+            if (!usercopy64_copy_from_user(
+                    g_syscall64_gfx_tmp,
+                    b.pixels,
+                    byte_count)) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (num == SYS64_GFX_PRESENT) {
+                b.dst_x = 0;
+                b.dst_y = 0;
+            }
+
+            /*
+             * If this process requested graphical app mode, store the
+             * latest frame in the process-owned graphics buffer.
+             *
+             * If it is also foreground, draw it to the real framebuffer.
+             * If it is background, only remember the frame so view <pid>
+             * can show it later.
+             */
+            is_graphics_app =
+                process64_get_graphics_mode() == PROCESS64_GFX_ACTIVE;
+
+            is_foreground = process64_current_is_foreground();
+
+            if (is_graphics_app) {
+                if (!process64_present_current_gfx(
+                        g_syscall64_gfx_tmp,
+                        b.width,
+                        b.height,
+                        b.dst_x,
+                        b.dst_y)) {
+                    frame->rax = syscall64_error(SYS64_EINVAL);
+                    break;
+                }
+
+                if (is_foreground) {
+                    fb64_blit_rgb32(
+                        b.dst_x,
+                        b.dst_y,
+                        b.width,
+                        b.height,
+                        g_syscall64_gfx_tmp
+                    );
+                }
+
+                frame->rax = 0;
+                break;
+            }
+
+            /*
+             * Non-graphical legacy/direct-screen path.
+             */
+            fb64_blit_rgb32(
+                b.dst_x,
+                b.dst_y,
+                b.width,
+                b.height,
+                g_syscall64_gfx_tmp
+            );
+
+            frame->rax = 0;
+            break;
+        }
+
+        case SYS64_GFX_SET_MODE: {
+            nq_u32 mode = (nq_u32)frame->rdi;
+
+            if (mode != 0 && mode != 1) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            if (!process64_set_graphics_mode(mode)) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            frame->rax = 0;
+            break;
+        }
+
+        case SYS64_GFX_GET_MODE:
+            frame->rax = process64_get_graphics_mode();
+            break;
 
         default:
             k64_print("\n[user] unknown syscall: ");

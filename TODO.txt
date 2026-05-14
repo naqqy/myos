@@ -268,42 +268,42 @@ GRAPHICS APP PATH
 Goal: support visually appealing graphical apps instead of text-only demos.
 ============================================================
 
-49 Add app graphics API/syscalls. // HIGH PRIORITY TODO
+49 Add app graphics API/syscalls. // DONE POC
 SYS_GFX_INFO
 SYS_GFX_CLEAR
 SYS_GFX_PRESENT
 SYS_GFX_DRAW_RECT
-SYS_GFX_DRAW_IMAGE/BLIT
+SYS_GFX_BLIT
 safe framebuffer access through kernel
 foundation for GUI/window compositor
 
-50 Add user app framebuffer/backbuffer support. // HIGH PRIORITY TODO
+50 Add user app framebuffer/backbuffer support. // DONE POC
 allocate app-owned backbuffer
 let app render into user memory
 kernel copies/presents to framebuffer or window buffer
 avoid giving apps direct raw framebuffer access
 support simple double buffering
 
-51 Add graphical app mode. // HIGH PRIORITY TODO
+51 Add graphical app mode. // DONE POC
 process can request graphics mode
 shell can switch between terminal/app/window views
 view <pid> for graphical app shows its framebuffer/window
 fg <pid> sends input to graphical app
 
-52 Add 2D graphics demo app in C. // HIGH PRIORITY TODO
+52 Add 2D graphics demo app in C. // DONE POC
 draw moving shapes
 draw images/sprites
 read keyboard input
 use timing syscalls
 prove app graphics/input/timing syscalls work
 
-53 Add game asset pipeline foundation. // HIGH PRIORITY TODO
+53 Add game asset pipeline foundation. // DONE POC
 PNG → NIMG textures
 pack assets into INITRD and FAT32 image
 app asset loading through VFS/syscalls
 asset paths under /assets/game/
 
-54 Add graphics performance improvements. // HIGH PRIORITY TODO
+54 Add graphics performance improvements. // DONE POC
 fast framebuffer blit
 dirty rectangle updates
 simple double buffering
@@ -324,6 +324,8 @@ draw window frames
 draw title bars
 basic close/minimize placeholders
 software compositing to framebuffer
+fixed-position windows first
+keyboard switching first, mouse later
 
 56 Add app window API/syscalls. // HIGH PRIORITY TODO
 SYS_WIN_CREATE
