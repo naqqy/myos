@@ -1,17 +1,19 @@
 #include "process64.h"
 
 #include "../arch/x86_64/context_switch64.h"
+#include "../arch/x86_64/timer64.h"
 #include "../mm/kmem64.h"
 #include "../k64_console.h"
 #include "../arch/x86_64/gdt64.h"
 #include "../console/terminal64.h"
 #include "../debug/bootlog64.h"
+#include "../input/kinput64.h"
 
 static process64_task_t g_tasks[PROCESS64_MAX_TASKS];
 static process64_task_t* g_current = 0;
 static nq_u32 g_next_pid = 1;
 
-static int g_preemption_enabled = 0;
+static int g_preemption_enabled = 1;
 static nq_u64 g_scheduler_ticks = 0;
 static nq_u64 g_preempt_switches = 0;
 
@@ -75,6 +77,52 @@ static const char* process64_state_name(process64_state_t state) {
 
 static nq_u64 align_down64(nq_u64 value, nq_u64 align) {
     return value & ~(align - 1u);
+}
+
+static process64_task_t* process64_find_by_pid(nq_u32 pid) {
+    for (nq_u32 i = 0; i < PROCESS64_MAX_TASKS; i++) {
+        if (g_tasks[i].state == PROCESS64_UNUSED) {
+            continue;
+        }
+
+        if (g_tasks[i].pid == pid) {
+            return &g_tasks[i];
+        }
+    }
+
+    return 0;
+}
+
+static terminal64_session_t* process64_terminal_for_new_task(nq_u32 flags) {
+    terminal64_session_t* term = 0;
+
+    /*
+     * spawn:
+     *   private terminal, visible through view <pid>
+     *
+     * run / foreground:
+     *   share the current terminal, so output appears directly in KER64.
+     */
+    if (flags & PROCESS64_SPAWN_PRIVATE_TERMINAL) {
+        term = terminal64_create();
+
+        if (term) {
+            return term;
+        }
+
+        /*
+         * If private terminal allocation fails, fall back safely to the
+         * current terminal instead of failing task creation.
+         */
+    }
+
+    term = process64_current_terminal();
+
+    if (!term) {
+        term = terminal64_kernel();
+    }
+
+    return term;
 }
 
 static void process64_task_trampoline(void) {
@@ -166,7 +214,10 @@ void process64_init(void) {
     g_current = &g_tasks[0];
     g_next_pid = 1;
 
-    g_preemption_enabled = 0;
+    /*
+     * Preemption is ON by default.
+     */
+    g_preemption_enabled = 1;
     g_scheduler_ticks = 0;
     g_preempt_switches = 0;
     g_quantum_ticks = PROCESS64_DEFAULT_QUANTUM_TICKS;
@@ -179,15 +230,34 @@ int process64_create_kernel_task(
     process64_entry_t entry,
     void* arg
 ) {
+    /*
+     * Backward-compatible default:
+     * old callers behave like foreground/current-terminal tasks.
+     */
+    return process64_create_kernel_task_ex(
+        name,
+        entry,
+        arg,
+        PROCESS64_SPAWN_FOREGROUND
+    );
+}
+
+int process64_create_kernel_task_ex(
+    const char* name,
+    process64_entry_t entry,
+    void* arg,
+    nq_u32 flags
+) {
     if (!entry) {
         return -1;
     }
 
     process64_task_t* task = 0;
 
+    process64_reap_zombies();
+
     for (nq_u32 i = 1; i < PROCESS64_MAX_TASKS; i++) {
-        if (g_tasks[i].state == PROCESS64_UNUSED ||
-            g_tasks[i].state == PROCESS64_ZOMBIE) {
+        if (g_tasks[i].state == PROCESS64_UNUSED) {
             task = &g_tasks[i];
             break;
         }
@@ -214,14 +284,32 @@ int process64_create_kernel_task(
     task->entry = entry;
     task->arg = arg;
 
-    task->terminal = terminal64_create();
+    if (flags & PROCESS64_SPAWN_PRIVATE_TERMINAL) {
+        task->terminal = terminal64_create();
 
-    if (!task->terminal) {
-        task->terminal = terminal64_kernel();
+        if (task->terminal) {
+            task->owns_terminal = 1;
+        } else {
+            task->terminal = process64_current_terminal();
+
+            if (!task->terminal) {
+                task->terminal = terminal64_kernel();
+            }
+
+            task->owns_terminal = 0;
+        }
+    } else {
+        task->terminal = process64_current_terminal();
+
+        if (!task->terminal) {
+            task->terminal = terminal64_kernel();
+        }
+
+        task->owns_terminal = 0;
     }
 
     task->terminal_id = terminal64_id(task->terminal);
-    task->foreground = 0;
+    task->foreground = (flags & PROCESS64_SPAWN_FOREGROUND) ? 1 : 0;
 
     str_copy64(task->name, name ? name : "task", sizeof(task->name));
 
@@ -436,20 +524,6 @@ void process64_print_summary(void) {
     }
 }
 
-static process64_task_t* process64_find_by_pid(nq_u32 pid) {
-    for (nq_u32 i = 0; i < PROCESS64_MAX_TASKS; i++) {
-        if (g_tasks[i].state == PROCESS64_UNUSED) {
-            continue;
-        }
-
-        if (g_tasks[i].pid == pid) {
-            return &g_tasks[i];
-        }
-    }
-
-    return 0;
-}
-
 terminal64_session_t* process64_terminal(process64_task_t* task) {
     if (!task || !task->terminal) {
         return terminal64_kernel();
@@ -510,4 +584,417 @@ int process64_foreground(nq_u32 pid) {
     task->foreground = 1;
     terminal64_switch(task->terminal);
     return 1;
+}
+
+nq_u32 process64_current_pid(void) {
+    if (!g_current) {
+        return 0;
+    }
+
+    return g_current->pid;
+}
+
+void process64_sleep_ticks(nq_u64 ticks) {
+    nq_u64 start;
+
+    if (ticks == 0) {
+        return;
+    }
+
+    start = timer64_get_ticks();
+
+    while ((timer64_get_ticks() - start) < ticks) {
+        /*
+         * We are inside a syscall/interrupt return path.
+         * Do NOT process64_yield() here yet.
+         *
+         * Enable interrupts so PIT ticks can advance, then halt until
+         * the next interrupt. The CPU wakes on timer IRQ, returns here,
+         * and we check ticks again.
+         */
+        __asm__ volatile ("sti");
+        __asm__ volatile ("hlt");
+        __asm__ volatile ("cli");
+    }
+}
+
+int process64_is_alive(nq_u32 pid) {
+    process64_task_t* task = process64_find_by_pid(pid);
+
+    if (!task) {
+        return 0;
+    }
+
+    if (task->state == PROCESS64_UNUSED ||
+        task->state == PROCESS64_ZOMBIE) {
+        return 0;
+    }
+
+    return 1;
+}
+
+void process64_wait_pid(nq_u32 pid) {
+    while (process64_is_alive(pid)) {
+        process64_yield();
+    }
+}
+
+static process64_task_t* process64_foreground_task(void) {
+    for (nq_u32 i = 0; i < PROCESS64_MAX_TASKS; i++) {
+        process64_task_t* task = &g_tasks[i];
+
+        if (task->state == PROCESS64_UNUSED ||
+            task->state == PROCESS64_ZOMBIE) {
+            continue;
+        }
+
+        if (task->foreground) {
+            return task;
+        }
+    }
+
+    return &g_tasks[0];
+}
+
+int process64_has_foreground_app(void) {
+    process64_task_t* task = process64_foreground_task();
+
+    if (!task) {
+        return 0;
+    }
+
+    return task->pid != 0;
+}
+
+nq_u32 process64_foreground_pid(void) {
+    process64_task_t* task = process64_foreground_task();
+
+    if (!task) {
+        return 0;
+    }
+
+    return task->pid;
+}
+
+static int process64_task_input_empty(process64_task_t* task) {
+    if (!task) {
+        return 1;
+    }
+
+    return task->input_head == task->input_tail;
+}
+
+static int process64_task_input_full(process64_task_t* task) {
+    nq_u32 next;
+
+    if (!task) {
+        return 1;
+    }
+
+    next = (task->input_tail + 1u) % PROCESS64_INPUT_QUEUE_SIZE;
+
+    return next == task->input_head;
+}
+
+static int process64_task_push_key(process64_task_t* task, char c) {
+    nq_u32 next;
+
+    if (!task || c == 0) {
+        return 0;
+    }
+
+    next = (task->input_tail + 1u) % PROCESS64_INPUT_QUEUE_SIZE;
+
+    if (next == task->input_head) {
+        return 0;
+    }
+
+    task->input_queue[task->input_tail] = c;
+    task->input_tail = next;
+
+    return 1;
+}
+
+static int process64_task_pop_key(process64_task_t* task) {
+    char c;
+
+    if (!task || process64_task_input_empty(task)) {
+        return 0;
+    }
+
+    c = task->input_queue[task->input_head];
+    task->input_head =
+        (task->input_head + 1u) % PROCESS64_INPUT_QUEUE_SIZE;
+
+    return (int)c;
+}
+
+int process64_push_key_to_foreground(char c) {
+    process64_task_t* task = process64_foreground_task();
+
+    if (!task || task->pid == 0) {
+        return 0;
+    }
+
+    return process64_task_push_key(task, c);
+}
+
+int process64_input_poll_key(void) {
+    int c;
+
+    /*
+     * First check this process's private input queue.
+     */
+    c = process64_task_pop_key(g_current);
+
+    if (c != 0) {
+        return c;
+    }
+
+    /*
+     * POC direct foreground input path:
+     *
+     * If the currently running task is a foreground user/app task,
+     * it may pull directly from the global keyboard queue.
+     *
+     * This fixes run <app>, where the shell is waiting and may not
+     * be actively routing keyboard input into the app queue.
+     */
+    if (g_current && g_current->pid != 0 && g_current->foreground) {
+        return kinput64_poll_char();
+    }
+
+    return 0;
+}
+
+int process64_input_get_key(void) {
+    int c;
+
+    for (;;) {
+        c = process64_input_poll_key();
+
+        if (c != 0) {
+            return c;
+        }
+
+        /*
+         * Do NOT process64_yield() from inside a syscall loop.
+         * That can break the syscall/iret return path.
+         *
+         * Wait for an interrupt, then check the queue again.
+         */
+        __asm__ volatile ("sti");
+        __asm__ volatile ("hlt");
+        __asm__ volatile ("cli");
+    }
+}
+
+static void process64_reap_task(process64_task_t* task) {
+    if (!task) {
+        return;
+    }
+
+    if (task == &g_tasks[0]) {
+        return;
+    }
+
+    if (task->state != PROCESS64_ZOMBIE) {
+        return;
+    }
+
+    /*
+     * Free kernel task stack.
+     */
+    if (task->stack_base) {
+        kfree64((void*)task->stack_base);
+        task->stack_base = 0;
+        task->stack_size = 0;
+        task->rsp = 0;
+    }
+
+    /*
+     * Private terminal cleanup.
+     *
+     * Only do this if terminal64 has a destroy function.
+     * If it does not yet, leave this as a later TODO.
+     */
+#if 0
+    if (task->owns_terminal && task->terminal) {
+        terminal64_destroy(task->terminal);
+    }
+#endif
+
+    task->terminal = 0;
+    task->terminal_id = 0;
+    task->owns_terminal = 0;
+    task->foreground = 0;
+
+    task->entry = 0;
+    task->arg = 0;
+
+    /*
+     * Clear input queue if present.
+     */
+#ifdef PROCESS64_INPUT_QUEUE_SIZE
+    task->input_head = 0;
+    task->input_tail = 0;
+#endif
+
+    task->name[0] = 0;
+    task->pid = 0;
+    task->state = PROCESS64_UNUSED;
+}
+
+void process64_reap_zombies(void) {
+    for (nq_u32 i = 1; i < PROCESS64_MAX_TASKS; i++) {
+        if (g_tasks[i].state == PROCESS64_ZOMBIE) {
+            process64_reap_task(&g_tasks[i]);
+        }
+    }
+}
+
+int process64_reap_pid(nq_u32 pid) {
+    process64_task_t* task = process64_find_by_pid(pid);
+
+    if (!task) {
+        return 0;
+    }
+
+    if (task == &g_tasks[0]) {
+        return 0;
+    }
+
+    if (task->state != PROCESS64_ZOMBIE) {
+        return 0;
+    }
+
+    process64_reap_task(task);
+    return 1;
+}
+
+nq_u32 process64_zombie_count(void) {
+    nq_u32 count = 0;
+
+    for (nq_u32 i = 1; i < PROCESS64_MAX_TASKS; i++) {
+        if (g_tasks[i].state == PROCESS64_ZOMBIE) {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+static nq_u64 str_len64(const char* s) {
+    nq_u64 n = 0;
+
+    if (!s) {
+        return 0;
+    }
+
+    while (s[n]) {
+        n++;
+    }
+
+    return n;
+}
+
+static void str_copy_bounded64(char* dst, const char* src, nq_u64 dst_size) {
+    nq_u64 i = 0;
+
+    if (!dst || dst_size == 0) {
+        return;
+    }
+
+    if (!src) {
+        dst[0] = 0;
+        return;
+    }
+
+    while (src[i] && i + 1 < dst_size) {
+        dst[i] = src[i];
+        i++;
+    }
+
+    dst[i] = 0;
+}
+
+int process64_file_open(const char* path, nq_u64 size) {
+    process64_task_t* task = process64_current();
+
+    if (!task || !path || !path[0]) {
+        return -1;
+    }
+
+    for (nq_u32 i = 0; i < PROCESS64_MAX_FILES; i++) {
+        if (!task->files[i].used) {
+            task->files[i].used = 1;
+            task->files[i].size = size;
+            task->files[i].offset = 0;
+            str_copy_bounded64(
+                task->files[i].path,
+                path,
+                sizeof(task->files[i].path)
+            );
+
+            /*
+             * Return handles starting at 3 so 0/1/2 can later be stdin/out/err.
+             */
+            return (int)(i + 3);
+        }
+    }
+
+    return -1;
+}
+
+int process64_file_close(int handle) {
+    process64_task_t* task = process64_current();
+
+    if (!task) {
+        return -1;
+    }
+
+    if (handle < 3) {
+        return -1;
+    }
+
+    nq_u32 idx = (nq_u32)(handle - 3);
+
+    if (idx >= PROCESS64_MAX_FILES) {
+        return -1;
+    }
+
+    if (!task->files[idx].used) {
+        return -1;
+    }
+
+    task->files[idx].used = 0;
+    task->files[idx].path[0] = 0;
+    task->files[idx].size = 0;
+    task->files[idx].offset = 0;
+
+    return 0;
+}
+
+process64_file_t* process64_file_from_handle(int handle) {
+    process64_task_t* task = process64_current();
+
+    if (!task) {
+        return 0;
+    }
+
+    if (handle < 3) {
+        return 0;
+    }
+
+    nq_u32 idx = (nq_u32)(handle - 3);
+
+    if (idx >= PROCESS64_MAX_FILES) {
+        return 0;
+    }
+
+    if (!task->files[idx].used) {
+        return 0;
+    }
+
+    return &task->files[idx];
 }

@@ -602,3 +602,28 @@ int vfs64_rmdir(const char* path) {
 
     return fat32_64_rmdir_path(normalized);
 }
+
+int vfs64_stat(const char* path, vfs64_stat_t* out) {
+    static nq_u8 tmp[1];
+    nq_u64 size = 0;
+
+    if (!out) {
+        return 0;
+    }
+
+    out->size = 0;
+    out->type = VFS64_TYPE_UNKNOWN;
+
+    /*
+     * POC:
+     * Try reading with zero/one byte buffer.
+     * Better later: backend-specific stat.
+     */
+    if (vfs64_read_file(path, tmp, 1, &size)) {
+        out->size = size;
+        out->type = VFS64_TYPE_FILE;
+        return 1;
+    }
+
+    return 0;
+}

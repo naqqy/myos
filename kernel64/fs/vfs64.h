@@ -5,6 +5,17 @@
 
 #define VFS64_MAX_PATH 256
 
+typedef struct vfs64_stat {
+    nq_u64 size;
+    nq_u32 type;
+} vfs64_stat_t;
+
+#define VFS64_TYPE_UNKNOWN 0
+#define VFS64_TYPE_FILE    1
+#define VFS64_TYPE_DIR     2
+
+int vfs64_stat(const char* path, vfs64_stat_t* out);
+
 int vfs64_mount_root(void);
 int vfs64_mounted(void);
 

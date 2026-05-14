@@ -6,6 +6,30 @@
 
 #define PROCESS64_MAX_TASKS 16
 #define PROCESS64_STACK_SIZE (32u * 1024u)
+#define PROCESS64_INPUT_QUEUE_SIZE 64
+
+/*
+ * Spawn/terminal policy flags.
+ *
+ * FOREGROUND:
+ *   The process is treated as foreground and shares the current terminal.
+ *
+ * PRIVATE_TERMINAL:
+ *   The process gets its own private terminal/session. Use view <pid> to see it.
+ *
+ * If neither flag is set, the default is to share the current terminal.
+ */
+#define PROCESS64_SPAWN_FOREGROUND       0x01u
+#define PROCESS64_SPAWN_PRIVATE_TERMINAL 0x02u
+
+#define PROCESS64_MAX_FILES 8
+
+typedef struct process64_file {
+    int used;
+    char path[128];
+    nq_u64 size;
+    nq_u64 offset;
+} process64_file_t;
 
 typedef void (*process64_entry_t)(void* arg);
 
@@ -31,8 +55,15 @@ typedef struct process64_task {
     terminal64_session_t* terminal;
     nq_u32 terminal_id;
     int foreground;
+    int owns_terminal;
 
     char name[32];
+
+    char input_queue[PROCESS64_INPUT_QUEUE_SIZE];
+    nq_u32 input_head;
+    nq_u32 input_tail;
+
+    process64_file_t files[PROCESS64_MAX_FILES];
 } process64_task_t;
 
 void process64_init(void);
@@ -41,6 +72,13 @@ int process64_create_kernel_task(
     const char* name,
     process64_entry_t entry,
     void* arg
+);
+
+int process64_create_kernel_task_ex(
+    const char* name,
+    process64_entry_t entry,
+    void* arg,
+    nq_u32 flags
 );
 
 void process64_yield(void);
@@ -66,5 +104,27 @@ int process64_foreground(nq_u32 pid);
 
 void process64_write_current(const char* s);
 void process64_write_current_len(const char* s, nq_u64 len);
+
+nq_u32 process64_current_pid(void);
+void process64_sleep_ticks(nq_u64 ticks);
+
+int process64_is_alive(nq_u32 pid);
+void process64_wait_pid(nq_u32 pid);
+
+int process64_has_foreground_app(void);
+nq_u32 process64_foreground_pid(void);
+
+int process64_push_key_to_foreground(char c);
+int process64_input_poll_key(void);
+int process64_input_get_key(void);
+
+void process64_reap_zombies(void);
+int process64_reap_pid(nq_u32 pid);
+nq_u32 process64_zombie_count(void);
+
+int process64_file_open(const char* path, nq_u64 size);
+int process64_file_read(int handle, void* dst, nq_u64 max_bytes);
+int process64_file_close(int handle);
+process64_file_t* process64_file_from_handle(int handle);
 
 #endif

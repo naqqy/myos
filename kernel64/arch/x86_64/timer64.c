@@ -10,7 +10,7 @@ static nq_u32 g_timer_frequency_hz = 100;
 
 int timer64_init(nq_u32 frequency_hz) {
     if (frequency_hz == 0) {
-        frequency_hz = 100;
+        frequency_hz = 1000;
     }
 
     g_timer_ticks = 0;

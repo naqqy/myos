@@ -8,6 +8,32 @@
 #define SYS64_WRITE      0
 #define SYS64_EXIT       1
 #define SYS64_GET_TICKS  2
+#define SYS64_YIELD      3
+#define SYS64_GETPID     4
+#define SYS64_SLEEP      5
+#define SYS64_INPUT_POLL_KEY  6
+#define SYS64_INPUT_GET_KEY   7
+#define SYS64_OPEN            8
+#define SYS64_READ            9
+#define SYS64_CLOSE           10
+#define SYS64_STAT            11
+
+typedef struct naq_stat {
+    nq_u64 size;
+    nq_u32 type;
+    nq_u32 reserved;
+} naq_stat_t;
+
+#define NAQ_STAT_TYPE_UNKNOWN 0
+#define NAQ_STAT_TYPE_FILE    1
+#define NAQ_STAT_TYPE_DIR     2
+
+#define SYS64_OK          0
+#define SYS64_EINVAL     22
+#define SYS64_ENOSYS     38
+#define SYS64_EFAULT     14
+
+#define SYS64_ERR(x) ((nq_u64)(0ull - (nq_u64)(x)))
 
 typedef struct syscall64_frame {
     nq_u64 r15;

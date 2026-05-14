@@ -615,14 +615,17 @@ static void shell64_spawn_app(const char* path) {
         return;
     }
 
-    int pid = elf64_spawn_file(path);
+    int pid = elf64_spawn_file_ex(
+        path,
+        PROCESS64_SPAWN_PRIVATE_TERMINAL
+    );
 
     if (pid < 0) {
         k64_print("spawn: failed to spawn app\n");
         return;
     }
 
-    k64_print("spawn: pid=");
+    k64_print("spawned pid=");
     k64_print_dec64((nq_u64)pid);
     k64_print("\n");
 }
@@ -635,22 +638,22 @@ static void shell64_run_app(const char* path) {
         return;
     }
 
-    int pid = elf64_spawn_file(path);
+    int pid = elf64_spawn_file_ex(
+        path,
+        PROCESS64_SPAWN_FOREGROUND
+    );
 
     if (pid < 0) {
         k64_print("run: failed to spawn app\n");
         return;
     }
 
-    k64_print("run: pid=");
-    k64_print_dec64((nq_u64)pid);
-    k64_print("\n");
-
     /*
-     * Give the newly-created app task a chance to run immediately.
-     * If timer preemption is enabled, it will also run from IRQ0.
+     * run keeps the current KER64 terminal.
+     * The shell waits until the foreground app exits, so app output appears
+     * directly in this terminal and the prompt returns afterward.
      */
-    process64_yield();
+    process64_wait_pid((nq_u32)pid);
 }
 
 static void shell64_view_process(const char* pid_text) {
@@ -1051,7 +1054,10 @@ static void shell64_execute_command(void) {
         usermode64_enter_test();
     }
     else if (str_eq(arg, "apptest")) {
-        int pid = elf64_spawn_file("/apps/HELLO.ELF");
+        int pid = elf64_spawn_file_ex(
+            "/apps/HELLO.ELF",
+            PROCESS64_SPAWN_PRIVATE_TERMINAL
+        );
 
         if (pid < 0) {
             k64_print("apptest: failed\n");
@@ -1186,7 +1192,7 @@ void shell64_put_char(char c) {
     k64_putchar(c);
 }
 
-void shell64_poll(void) {
+static void shell64_route_pending_input(void) {
     for (;;) {
         int c = kinput64_poll_char();
 
@@ -1194,6 +1200,16 @@ void shell64_poll(void) {
             break;
         }
 
-        shell64_put_char((char)c);
+        if (process64_has_foreground_app()) {
+            process64_push_key_to_foreground((char)c);
+        } else {
+            shell64_put_char((char)c);
+        }
+
+        process64_reap_zombies();
     }
+}
+
+void shell64_poll(void) {
+    shell64_route_pending_input();
 }

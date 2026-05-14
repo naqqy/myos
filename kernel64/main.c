@@ -136,7 +136,7 @@ void kmain64(naq_boot_info_t* boot) {
      * Without this, keyboard input will not work.
      */
     kinput64_init();
-    irq64_init(100);
+    irq64_init(1000);
 
     /*
      * Process/task system.

@@ -177,7 +177,7 @@ block writes disabled
 apps/assets included
 easy USB copy command
 
-39 Add real-hardware test checklist. // HIGH PRIORITY TODO
+39 Add real-hardware test checklist. // DONE
 boot from USB
 verify keyboard
 verify framebuffer
@@ -185,7 +185,7 @@ verify INITRD
 verify app launch
 verify app exit
 verify no disk writes
-verify graphics demo runs
+verify graphics demo runs later
 
 
 ============================================================
@@ -193,7 +193,7 @@ APP FOUNDATION PATH
 Goal: make real C apps usable before building the GUI and 3D game.
 ============================================================
 
-40 Add C user app runtime. // HIGH PRIORITY TODO
+40 Add C user app runtime. // DONE POC
 minimal crt0
 _start calls main()
 syscall wrappers
@@ -201,14 +201,14 @@ basic memset/memcpy/strlen
 basic malloc later
 build .c apps into ELF64
 
-41 Update app build system for C apps. // HIGH PRIORITY TODO
+41 Update app build system for C apps. // DONE
 compile userapps/*.c
 link with user crt0/runtime
 build apps into /apps/*.ELF
 support assembly and C apps together
 add example C app
 
-42 Add syscall table expansion needed for apps. // HIGH PRIORITY TODO
+42 Add syscall table expansion needed for apps. // DONE
 SYS_WRITE
 SYS_EXIT
 SYS_GET_TICKS
@@ -218,20 +218,20 @@ SYS_SLEEP
 return negative error codes
 consistent syscall argument validation
 
-43 Add app timing syscalls. // HIGH PRIORITY TODO
+43 Add app timing syscalls. // DONE
 SYS_GET_TICKS
 SYS_SLEEP
 SYS_YIELD
 fixed timestep helper for games
 frame timing support
 
-44 Add input syscalls for apps. // HIGH PRIORITY TODO
+44 Add input syscalls for apps. // DONE POC
 SYS_INPUT_POLL_KEY
 SYS_INPUT_GET_KEY
 keyboard events routed to foreground app
 shell keeps control when no foreground app
 
-45 Add foreground/background app model. // HIGH PRIORITY TODO
+45 Add foreground/background app model. // DONE POC
 run waits for foreground app
 spawn starts background app
 shell remains responsive
@@ -239,14 +239,14 @@ foreground ownership of terminal input
 fg <pid> gives keyboard to app
 view <pid> only views terminal/output
 
-46 Add task/process reaping. // HIGH PRIORITY TODO
+46 Add task/process reaping. // DONE POC
 free ZOMBIE task stacks
-free app spawn args
-free user stacks/app memory
-destroy private terminals when safe
+free app spawn args // already done
+free user stacks/app memory later with per-process VM
+destroy private terminals later when terminal64_destroy exists
 remove dead tasks from process table safely
 
-47 Add app file read syscalls. // HIGH PRIORITY TODO
+47 Add app file read syscalls. // DONE POC
 SYS_OPEN
 SYS_READ
 SYS_CLOSE
@@ -255,11 +255,12 @@ read-only app asset loading
 safe path validation
 per-process file handles
 
-48 Add process stdout/stderr terminal routing. // HIGH PRIORITY TODO
+48 Add process stdout/stderr terminal routing. // DONE POC
 SYS_WRITE goes to process terminal/stdout
 graphical apps can still log to terminal
 view <pid> shows app logs
 fg <pid> controls app screen/input
+stderr fd support later
 
 
 ============================================================

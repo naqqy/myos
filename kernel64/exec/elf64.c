@@ -51,6 +51,40 @@
 #define ELF64_USER_STACK_TOP ELF64_USER_MAX_ADDR
 #define ELF64_USER_STACK_BASE (ELF64_USER_STACK_TOP - ELF64_USER_STACK_SIZE)
 
+#ifndef ELF64_VERBOSE
+#define ELF64_VERBOSE 0
+#endif
+
+static void elf64_debug(const char* s) {
+#if ELF64_VERBOSE
+    k64_print(s);
+#else
+    (void)s;
+#endif
+}
+
+static void elf64_debug_hex(const char* label, nq_u64 value) {
+#if ELF64_VERBOSE
+    k64_print(label);
+    k64_print_hex64(value);
+    k64_print("\n");
+#else
+    (void)label;
+    (void)value;
+#endif
+}
+
+static void elf64_debug_dec(const char* label, nq_u64 value) {
+#if ELF64_VERBOSE
+    k64_print(label);
+    k64_print_dec64(value);
+    k64_print("\n");
+#else
+    (void)label;
+    (void)value;
+#endif
+}
+
 typedef struct elf64_ehdr {
     nq_u8  e_ident[EI_NIDENT];
     nq_u16 e_type;
@@ -267,13 +301,13 @@ static int elf64_load_segments(
         void* dst = (void*)ph[i].p_vaddr;
         const void* src = file + ph[i].p_offset;
 
-        k64_print("elf64: loading segment vaddr=");
-        k64_print_hex64(ph[i].p_vaddr);
-        k64_print(" filesz=");
-        k64_print_dec64(ph[i].p_filesz);
-        k64_print(" memsz=");
-        k64_print_dec64(ph[i].p_memsz);
-        k64_print("\n");
+        elf64_debug("elf64: loading segment vaddr=");
+        elf64_debug_hex(" vaddr=", ph[i].p_vaddr);
+        elf64_debug(" filesz=");
+        elf64_debug_dec(" filesz=", ph[i].p_filesz);
+        elf64_debug(" memsz=");
+        elf64_debug_dec(" memsz=", ph[i].p_memsz);
+        elf64_debug("\n");
 
         /*
          * POC:
@@ -335,9 +369,9 @@ int elf64_exec_file(const char* path) {
         return 0;
     }
 
-    k64_print("elf64: loading ");
-    k64_print(path);
-    k64_print("\n");
+    elf64_debug("elf64: loading ");
+    elf64_debug(path);
+    elf64_debug("\n");
 
     if (!vfs64_read_file(
             path,
@@ -375,12 +409,12 @@ int elf64_exec_file(const char* path) {
         return 0;
     }
 
-    k64_print("elf64: entering user app\n");
-    k64_print("entry=");
-    k64_print_hex64(eh->e_entry);
-    k64_print(" stack=");
-    k64_print_hex64(user_stack_top);
-    k64_print("\n");
+    elf64_debug("elf64: entering user app\n");
+    elf64_debug("entry=");
+    elf64_debug_hex(" entry=", eh->e_entry);
+    elf64_debug(" stack=");
+    elf64_debug_hex(" stack=", user_stack_top);
+    elf64_debug("\n");
 
     process64_task_t* current = process64_current();
 
@@ -389,9 +423,9 @@ int elf64_exec_file(const char* path) {
 
         gdt64_set_rsp0(kernel_stack_top);
 
-        k64_print("elf64: TSS RSP0=");
-        k64_print_hex64(kernel_stack_top);
-        k64_print("\n");
+        elf64_debug("elf64: TSS RSP0=");
+        elf64_debug_hex(" RSP0=", kernel_stack_top);
+        elf64_debug("\n");
     }
 
     usermode64_enter(eh->e_entry, user_stack_top);
@@ -427,7 +461,7 @@ static void elf64_process_entry(void* arg) {
     process64_exit();
 }
 
-int elf64_spawn_file(const char* path) {
+int elf64_spawn_file_ex(const char* path, nq_u32 flags) {
     if (!path || !path[0]) {
         return -1;
     }
@@ -443,10 +477,11 @@ int elf64_spawn_file(const char* path) {
     mem_zero64(arg, sizeof(*arg));
     str_copy64(arg->path, path, sizeof(arg->path));
 
-    int pid = process64_create_kernel_task(
+    int pid = process64_create_kernel_task_ex(
         "elf64-app",
         elf64_process_entry,
-        arg
+        arg,
+        flags
     );
 
     if (pid < 0) {
@@ -455,11 +490,22 @@ int elf64_spawn_file(const char* path) {
         return -1;
     }
 
-    k64_print("elf64: spawned ");
-    k64_print(path);
-    k64_print(" pid=");
-    k64_print_dec64((nq_u64)pid);
-    k64_print("\n");
+    elf64_debug("elf64: spawned ");
+    elf64_debug(path);
+    elf64_debug(" pid=");
+    elf64_debug_dec(" pid=", (nq_u64)pid);
+    elf64_debug("\n");
 
     return pid;
+}
+
+int elf64_spawn_file(const char* path) {
+    /*
+     * Backward-compatible behavior for old callers:
+     * spawn into a private terminal/session.
+     */
+    return elf64_spawn_file_ex(
+        path,
+        PROCESS64_SPAWN_PRIVATE_TERMINAL
+    );
 }

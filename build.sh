@@ -843,6 +843,68 @@ build_userapps() {
     return 1
   fi
 
+  local runtime_crt0="$USERAPPS_DIR/runtime/crt0.S"
+  local runtime_syscall="$USERAPPS_DIR/runtime/syscall.c"
+  local runtime_string="$USERAPPS_DIR/runtime/string.c"
+  local runtime_time="$USERAPPS_DIR/runtime/time.c"
+
+  local runtime_crt0_obj="$USERAPPS_BUILD_DIR/crt0.o"
+  local runtime_syscall_obj="$USERAPPS_BUILD_DIR/syscall.o"
+  local runtime_string_obj="$USERAPPS_BUILD_DIR/string.o"
+  local runtime_time_obj="$USERAPPS_BUILD_DIR/time.o"
+
+  if [[ -f "$runtime_crt0" ]]; then
+    "$GCC" \
+      -m64 \
+      -I"$USERAPPS_DIR/include" \
+      -ffreestanding \
+      -fno-pie \
+      -fno-stack-protector \
+      -mno-red-zone \
+      -nostdlib \
+      -c "$runtime_crt0" \
+      -o "$runtime_crt0_obj"
+  fi
+
+  if [[ -f "$runtime_syscall" ]]; then
+    "$GCC" \
+      -m64 \
+      -I"$USERAPPS_DIR/include" \
+      -ffreestanding \
+      -fno-pie \
+      -fno-stack-protector \
+      -mno-red-zone \
+      -nostdlib \
+      -c "$runtime_syscall" \
+      -o "$runtime_syscall_obj"
+  fi
+
+  if [[ -f "$runtime_string" ]]; then
+    "$GCC" \
+      -m64 \
+      -I"$USERAPPS_DIR/include" \
+      -ffreestanding \
+      -fno-pie \
+      -fno-stack-protector \
+      -mno-red-zone \
+      -nostdlib \
+      -c "$runtime_string" \
+      -o "$runtime_string_obj"
+  fi
+
+  if [[ -f "$runtime_time" ]]; then
+    "$GCC" \
+      -m64 \
+      -I"$USERAPPS_DIR/include" \
+      -ffreestanding \
+      -fno-pie \
+      -fno-stack-protector \
+      -mno-red-zone \
+      -nostdlib \
+      -c "$runtime_time" \
+      -o "$runtime_time_obj"
+  fi
+
   local found=0
 
   while IFS= read -r -d '' src; do
@@ -856,7 +918,7 @@ build_userapps() {
     name_upper="$(printf '%s' "$base" | tr 'a-z' 'A-Z')"
     out="$USERAPPS_BUILD_DIR/$name_upper.ELF"
 
-    msg "Building user app $name_upper.ELF"
+    msg "Building assembly user app $name_upper.ELF"
 
     "$GCC" \
       -m64 \
@@ -875,8 +937,51 @@ build_userapps() {
     "$OBJCOPY" --strip-debug "$out" "$out"
   done < <(find "$USERAPPS_DIR" -maxdepth 1 -type f -name '*.S' -print0)
 
+  while IFS= read -r -d '' src; do
+    found=1
+
+    local base
+    local name_upper
+    local obj
+    local out
+
+    base="$(basename "$src" .c)"
+    name_upper="$(printf '%s' "$base" | tr 'a-z' 'A-Z')"
+    obj="$USERAPPS_BUILD_DIR/$base.o"
+    out="$USERAPPS_BUILD_DIR/$name_upper.ELF"
+
+    msg "Compiling C user app $name_upper"
+
+    "$GCC" \
+      -m64 \
+      -I"$USERAPPS_DIR/include" \
+      -ffreestanding \
+      -fno-pie \
+      -fno-stack-protector \
+      -mno-red-zone \
+      -nostdlib \
+      -c "$src" \
+      -o "$obj"
+
+    msg "Linking C user app $name_upper.ELF"
+
+    "$LD" \
+      -m elf_x86_64 \
+      -static \
+      -nostdlib \
+      -T "$USERAPP_LINKER" \
+      -o "$out" \
+      "$runtime_crt0_obj" \
+      "$obj" \
+      "$runtime_syscall_obj" \
+      "$runtime_string_obj" \
+      "$runtime_time_obj"
+
+    "$OBJCOPY" --strip-debug "$out" "$out"
+  done < <(find "$USERAPPS_DIR" -maxdepth 1 -type f -name '*.c' -print0)
+
   if [[ "$found" == "0" ]]; then
-    echo "No user app .S files found in $USERAPPS_DIR."
+    echo "No user app source files found in $USERAPPS_DIR."
   fi
 }
 
