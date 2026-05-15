@@ -4,9 +4,9 @@
 #include "naq_boot_info.h"
 #include "../console/terminal64.h"
 
-#define PROCESS64_MAX_TASKS 16
-#define PROCESS64_STACK_SIZE (32u * 1024u)
-#define PROCESS64_INPUT_QUEUE_SIZE 64
+#define PROCESS64_MAX_TASKS 24
+#define PROCESS64_STACK_SIZE (256u * 1024u)
+#define PROCESS64_INPUT_QUEUE_SIZE 128
 
 /*
  * Spawn/terminal policy flags.
@@ -22,13 +22,13 @@
 #define PROCESS64_SPAWN_FOREGROUND       0x01u
 #define PROCESS64_SPAWN_PRIVATE_TERMINAL 0x02u
 
-#define PROCESS64_MAX_FILES 8
+#define PROCESS64_MAX_FILES 16
 
 #define PROCESS64_GFX_NONE   0
 #define PROCESS64_GFX_ACTIVE 1
 
-#define PROCESS64_GFX_MAX_WIDTH  320
-#define PROCESS64_GFX_MAX_HEIGHT 240
+#define PROCESS64_GFX_MAX_WIDTH  640
+#define PROCESS64_GFX_MAX_HEIGHT 480
 
 typedef struct process64_gfx {
     int mode;
@@ -54,6 +54,29 @@ typedef struct process64_file {
     nq_u64 offset;
 } process64_file_t;
 
+typedef struct process64_user_memory {
+    /*
+     * POC user memory swap support.
+     *
+     * Real solution later:
+     *   per-process page tables / address spaces.
+     *
+     * Current solution:
+     *   all ELF apps still execute at the same fixed user virtual range,
+     *   so we save/restore the loaded image range and user stack when the
+     *   scheduler switches between user apps.
+     */
+    int active;
+
+    nq_u64 image_base;
+    nq_u64 image_size;
+    void* image_backup;
+
+    nq_u64 stack_base;
+    nq_u64 stack_size;
+    void* stack_backup;
+} process64_user_memory_t;
+
 typedef void (*process64_entry_t)(void* arg);
 
 typedef enum process64_state {
@@ -72,6 +95,14 @@ typedef struct process64_task {
     nq_u64 stack_base;
     nq_u64 stack_size;
 
+    /*
+     * Address space:
+     * kernel tasks use paging64_kernel_pml4().
+     * ELF/user tasks get their own PML4.
+     */
+    nq_u64 pml4_phys;
+    int owns_address_space;
+
     process64_entry_t entry;
     void* arg;
 
@@ -89,6 +120,8 @@ typedef struct process64_task {
     process64_file_t files[PROCESS64_MAX_FILES];
 
     process64_gfx_t gfx;
+
+    process64_user_memory_t user;
 } process64_task_t;
 
 void process64_init(void);
@@ -118,6 +151,10 @@ void process64_on_timer_tick(void);
 void process64_schedule(void);
 
 process64_task_t* process64_current(void);
+
+int process64_current_create_user_address_space(void);
+nq_u64 process64_current_pml4(void);
+
 
 void process64_print_summary(void);
 
@@ -152,6 +189,16 @@ int process64_file_open(const char* path, nq_u64 size);
 int process64_file_read(int handle, void* dst, nq_u64 max_bytes);
 int process64_file_close(int handle);
 process64_file_t* process64_file_from_handle(int handle);
+
+int process64_user_memory_setup(
+    nq_u64 image_base,
+    nq_u64 image_size,
+    nq_u64 stack_base,
+    nq_u64 stack_size
+);
+
+void process64_user_memory_save_current(void);
+void process64_user_memory_restore_current(void);
 
 int process64_set_graphics_mode(nq_u32 mode);
 nq_u32 process64_get_graphics_mode(void);

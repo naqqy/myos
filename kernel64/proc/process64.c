@@ -3,20 +3,24 @@
 #include "../arch/x86_64/context_switch64.h"
 #include "../arch/x86_64/timer64.h"
 #include "../mm/kmem64.h"
+#include "../mm/paging64.h"
 #include "../k64_console.h"
 #include "../arch/x86_64/gdt64.h"
 #include "../console/terminal64.h"
 #include "../debug/bootlog64.h"
 #include "../input/kinput64.h"
 #include "../graphics/framebuffer64.h"
+#include "../gui/gui64.h"
 
 static process64_task_t g_tasks[PROCESS64_MAX_TASKS];
 static process64_task_t* g_current = 0;
 static nq_u32 g_next_pid = 1;
 
 static int g_preemption_enabled = 1;
+static nq_u32 g_preempt_disable_depth = 0;
 static nq_u64 g_scheduler_ticks = 0;
 static nq_u64 g_preempt_switches = 0;
+static nq_u64 g_preempt_blocked_ticks = 0;
 
 /*
  * Round-robin quantum in timer ticks.
@@ -34,6 +38,19 @@ static void mem_zero64(void* ptr, nq_u64 size) {
 
     for (nq_u64 i = 0; i < size; i++) {
         p[i] = 0;
+    }
+}
+
+static void mem_copy64(void* dst, const void* src, nq_u64 size) {
+    nq_u8* d = (nq_u8*)dst;
+    const nq_u8* s = (const nq_u8*)src;
+
+    if (!d || !s) {
+        return;
+    }
+
+    for (nq_u64 i = 0; i < size; i++) {
+        d[i] = s[i];
     }
 }
 
@@ -126,6 +143,92 @@ static terminal64_session_t* process64_terminal_for_new_task(nq_u32 flags) {
     return term;
 }
 
+static void process64_user_memory_free(process64_task_t* task) {
+    if (!task) {
+        return;
+    }
+
+    if (task->user.image_backup) {
+        kfree64(task->user.image_backup);
+        task->user.image_backup = 0;
+    }
+
+    if (task->user.stack_backup) {
+        kfree64(task->user.stack_backup);
+        task->user.stack_backup = 0;
+    }
+
+    task->user.active = 0;
+    task->user.image_base = 0;
+    task->user.image_size = 0;
+    task->user.stack_base = 0;
+    task->user.stack_size = 0;
+}
+
+static void process64_user_memory_save_task(process64_task_t* task) {
+    (void)task;
+
+    /*
+     * Old fixed-address user memory swapping has been replaced by
+     * per-process CR3/PML4 address spaces.
+     */
+}
+
+
+static void process64_user_memory_restore_task(process64_task_t* task) {
+    (void)task;
+
+    /*
+     * Old fixed-address user memory swapping has been replaced by
+     * per-process CR3/PML4 address spaces.
+     */
+}
+
+
+int process64_user_memory_setup(
+    nq_u64 image_base,
+    nq_u64 image_size,
+    nq_u64 stack_base,
+    nq_u64 stack_size
+) {
+    process64_task_t* task = g_current;
+
+    if (!task || task == &g_tasks[0]) {
+        return 0;
+    }
+
+    if (image_base == 0 || image_size == 0 ||
+        stack_base == 0 || stack_size == 0) {
+        return 0;
+    }
+
+    /*
+     * Real per-process address spaces are now responsible for isolating
+     * user memory. Keep this metadata for ps/debug output, but do not
+     * allocate image/stack backup buffers anymore.
+     */
+    process64_user_memory_free(task);
+
+    task->user.image_base = image_base;
+    task->user.image_size = image_size;
+    task->user.stack_base = stack_base;
+    task->user.stack_size = stack_size;
+    task->user.image_backup = 0;
+    task->user.stack_backup = 0;
+    task->user.active = 1;
+
+    return 1;
+}
+
+
+void process64_user_memory_save_current(void) {
+    process64_user_memory_save_task(g_current);
+}
+
+void process64_user_memory_restore_current(void) {
+    process64_user_memory_restore_task(g_current);
+}
+
 static void process64_task_trampoline(void) {
     process64_task_t* task = g_current;
 
@@ -203,6 +306,8 @@ void process64_init(void) {
     g_tasks[0].rsp = 0;
     g_tasks[0].stack_base = 0;
     g_tasks[0].stack_size = 0;
+    g_tasks[0].pml4_phys = paging64_kernel_pml4();
+    g_tasks[0].owns_address_space = 0;
     g_tasks[0].entry = 0;
     g_tasks[0].arg = 0;
 
@@ -219,11 +324,53 @@ void process64_init(void) {
      * Preemption is ON by default.
      */
     g_preemption_enabled = 1;
+    g_preempt_disable_depth = 0;
     g_scheduler_ticks = 0;
     g_preempt_switches = 0;
+    g_preempt_blocked_ticks = 0;
     g_quantum_ticks = PROCESS64_DEFAULT_QUANTUM_TICKS;
 
     bootlog64_print("Process64 initialized.\n");
+}
+
+
+int process64_current_create_user_address_space(void) {
+    process64_task_t* task = g_current;
+
+    if (!task || task == &g_tasks[0]) {
+        return 0;
+    }
+
+    if (task->owns_address_space &&
+        task->pml4_phys &&
+        task->pml4_phys != paging64_kernel_pml4()) {
+        paging64_switch_pml4(task->pml4_phys);
+        return 1;
+    }
+
+    nq_u64 pml4_phys = paging64_create_user_address_space();
+
+    if (!pml4_phys) {
+        k64_print("process64: failed to create user address space\n");
+        return 0;
+    }
+
+    task->pml4_phys = pml4_phys;
+    task->owns_address_space = 1;
+
+    paging64_switch_pml4(task->pml4_phys);
+
+    return 1;
+}
+
+nq_u64 process64_current_pml4(void) {
+    process64_task_t* task = g_current;
+
+    if (!task || !task->pml4_phys) {
+        return paging64_kernel_pml4();
+    }
+
+    return task->pml4_phys;
 }
 
 int process64_create_kernel_task(
@@ -271,6 +418,9 @@ int process64_create_kernel_task_ex(
     void* stack = kmalloc64(PROCESS64_STACK_SIZE);
 
     if (!stack) {
+        k64_print("process64: failed to allocate task stack. size=");
+        k64_print_dec64(PROCESS64_STACK_SIZE);
+        k64_print("\n");
         return -1;
     }
 
@@ -282,6 +432,8 @@ int process64_create_kernel_task_ex(
     task->state = PROCESS64_READY;
     task->stack_base = (nq_u64)stack;
     task->stack_size = PROCESS64_STACK_SIZE;
+    task->pml4_phys = paging64_kernel_pml4();
+    task->owns_address_space = 0;
     task->entry = entry;
     task->arg = arg;
 
@@ -361,6 +513,17 @@ static void process64_switch_to(process64_task_t* next) {
     next->state = PROCESS64_RUNNING;
     g_current = next;
 
+    if (!next->pml4_phys) {
+        next->pml4_phys = paging64_kernel_pml4();
+    }
+
+    /*
+     * Switch to the incoming task's address space before switching stacks.
+     * Kernel stacks live in the direct map / shared kernel mappings, so they
+     * remain valid across CR3 switches.
+     */
+    paging64_switch_pml4(next->pml4_phys);
+
     /*
      * If this task later enters ring 3, interrupts/syscalls from CPL3
      * will use TSS.rsp0. That must point to this task's kernel stack,
@@ -373,7 +536,17 @@ static void process64_switch_to(process64_task_t* next) {
     context_switch64(&prev->rsp, next->rsp);
 }
 
+
 void process64_yield(void) {
+    /*
+     * Do not voluntarily switch while a kernel critical section is active.
+     * Syscalls that intentionally yield/exit are not wrapped in the syscall
+     * preemption guard, so normal SYS_YIELD still works.
+     */
+    if (process64_preempt_disabled()) {
+        return;
+    }
+
     process64_task_t* next = process64_pick_next();
 
     if (!next) {
@@ -383,11 +556,19 @@ void process64_yield(void) {
     process64_switch_to(next);
 }
 
+
 void process64_exit(void) {
     if (!g_current) {
         for (;;) {
             __asm__ volatile ("hlt");
         }
+    }
+
+    /*
+     * A dying task must not leave global preemption disabled.
+     */
+    while (g_preempt_disable_depth > 0) {
+        g_preempt_disable_depth--;
     }
 
     g_current->state = PROCESS64_ZOMBIE;
@@ -401,6 +582,7 @@ void process64_exit(void) {
         __asm__ volatile ("hlt");
     }
 }
+
 
 int process64_kill(nq_u32 pid) {
     for (nq_u32 i = 0; i < PROCESS64_MAX_TASKS; i++) {
@@ -452,12 +634,45 @@ int process64_preemption_enabled(void) {
     return g_preemption_enabled;
 }
 
+void process64_preempt_disable(void) {
+    /*
+     * Single-CPU guard for now. Timer IRQs can still arrive, but
+     * process64_on_timer_tick() will not switch tasks while depth > 0.
+     */
+    g_preempt_disable_depth++;
+}
+
+void process64_preempt_enable(void) {
+    if (g_preempt_disable_depth > 0) {
+        g_preempt_disable_depth--;
+    }
+}
+
+int process64_preempt_disabled(void) {
+    return g_preempt_disable_depth != 0;
+}
+
+nq_u32 process64_preempt_depth(void) {
+    return g_preempt_disable_depth;
+}
+
 void process64_on_timer_tick(void) {
     if (!g_preemption_enabled) {
         return;
     }
 
     if (!g_current) {
+        return;
+    }
+
+    /*
+     * Timer IRQs are allowed to occur in kernel critical sections, but task
+     * switching is not. This prevents syscalls/GUI paths that use shared
+     * kernel temp buffers from being interrupted by another app entering the
+     * same kernel code.
+     */
+    if (process64_preempt_disabled()) {
+        g_preempt_blocked_ticks++;
         return;
     }
 
@@ -482,6 +697,7 @@ void process64_on_timer_tick(void) {
     process64_switch_to(next);
 }
 
+
 void process64_schedule(void) {
     process64_yield();
 }
@@ -499,9 +715,21 @@ void process64_print_summary(void) {
     k64_print_dec64(g_quantum_ticks);
     k64_print(" preempt_switches=");
     k64_print_dec64(g_preempt_switches);
+    k64_print(" guard_depth=");
+    k64_print_dec64(g_preempt_disable_depth);
+    k64_print(" blocked_ticks=");
+    k64_print_dec64(g_preempt_blocked_ticks);
     k64_print("\n");
 
-    k64_print("PID   STATE     TERM   FG   NAME\n");
+    k64_print("  max_tasks=");
+    k64_print_dec64(PROCESS64_MAX_TASKS);
+    k64_print(" stack_size=");
+    k64_print_dec64(PROCESS64_STACK_SIZE);
+    k64_print(" input_queue=");
+    k64_print_dec64(PROCESS64_INPUT_QUEUE_SIZE);
+    k64_print("\n");
+
+    k64_print("PID   STATE     TERM   FG   USER   AS    NAME\n");
 
     for (nq_u32 i = 0; i < PROCESS64_MAX_TASKS; i++) {
         if (g_tasks[i].state == PROCESS64_UNUSED) {
@@ -519,6 +747,12 @@ void process64_print_summary(void) {
 
         k64_print(g_tasks[i].foreground ? "Y" : "N");
         k64_print("    ");
+
+        k64_print(g_tasks[i].user.active ? "Y" : "N");
+        k64_print("      ");
+
+        k64_print(g_tasks[i].owns_address_space ? "USR" : "KER");
+        k64_print("   ");
 
         k64_print(g_tasks[i].name);
         k64_print("\n");
@@ -804,6 +1038,19 @@ static void process64_reap_task(process64_task_t* task) {
     }
 
     /*
+     * Free saved user image/stack backups for fixed-address app swapping.
+     */
+    process64_user_memory_free(task);
+
+    if (task->owns_address_space &&
+        task->pml4_phys &&
+        task->pml4_phys != paging64_kernel_pml4()) {
+        paging64_destroy_user_address_space(task->pml4_phys);
+        task->pml4_phys = paging64_kernel_pml4();
+        task->owns_address_space = 0;
+    }
+
+    /*
      * Free kernel task stack.
      */
     if (task->stack_base) {
@@ -851,6 +1098,10 @@ static void process64_reap_task(process64_task_t* task) {
     task->input_head = 0;
     task->input_tail = 0;
 #endif
+
+    if (task->pid != 0) {
+        gui64_destroy_windows_for_pid((int)task->pid);
+    }
 
     task->name[0] = 0;
     task->pid = 0;

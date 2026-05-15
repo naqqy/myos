@@ -24,6 +24,24 @@
 #define SYS64_GFX_BLIT       16
 #define SYS64_GFX_SET_MODE   17
 #define SYS64_GFX_GET_MODE   18
+#define SYS64_WIN_CREATE      19
+#define SYS64_WIN_DESTROY     20
+#define SYS64_WIN_PRESENT     21
+#define SYS64_WIN_SET_TITLE   22
+#define SYS64_WIN_GET_EVENT   23
+#define SYS64_WIN_CREATE_EX   24
+
+#define NAQ_WIN_EVENT_NONE   0
+#define NAQ_WIN_EVENT_KEY    1
+#define NAQ_WIN_EVENT_FOCUS  2
+#define NAQ_WIN_EVENT_CLOSE  3
+#define NAQ_WIN_EVENT_RESIZE 4
+#define NAQ_WIN_EVENT_MOUSE  5
+
+#define NAQ_WIN_FLAG_BORDERED    0x00000000u
+#define NAQ_WIN_FLAG_BORDERLESS  0x00000001u
+#define NAQ_WIN_FLAG_FULLSCREEN  0x00000002u
+#define NAQ_WIN_FLAG_GAME        0x00000004u
 
 typedef struct naq_stat {
     nq_u64 size;

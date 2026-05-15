@@ -4,6 +4,8 @@
 #include "../graphics/framebuffer64.h"
 #include "font8x8.h"
 
+#include "../gui/gui64.h"
+
 #define K64_CELL_W 8u
 #define K64_CELL_H 16u
 
@@ -25,6 +27,8 @@ struct terminal64_session {
 static terminal64_session_t g_terminals[TERM64_MAX_SESSIONS];
 static terminal64_session_t* g_kernel_terminal = 0;
 static terminal64_session_t* g_active_terminal = 0;
+static int g_terminal64_gui_mode = 0;
+static int g_terminal64_gui_dirty = 0;
 
 static nq_u32 g_cols = 0;
 static nq_u32 g_rows = 0;
@@ -161,6 +165,10 @@ static void k64_draw_terminal_cell(
     nq_u32 buffer_row,
     nq_u32 col
 ) {
+    if (g_terminal64_gui_mode) {
+        return;
+    }
+
     if (!t || t != g_active_terminal) {
         return;
     }
@@ -190,6 +198,10 @@ static void k64_draw_terminal_cell(
 
 static void k64_render_text_area(void) {
     terminal64_session_t* t = g_active_terminal;
+
+    if (g_terminal64_gui_mode) {
+        return;
+    }
 
     if (!fb64_available() || !t) {
         return;
@@ -241,7 +253,9 @@ static void terminal64_newline_internal(terminal64_session_t* t) {
 
     terminal64_ensure_cursor_visible(t);
 
-    if (t == g_active_terminal && old_view_top != t->view_top) {
+    if (!g_terminal64_gui_mode &&
+        t == g_active_terminal &&
+        old_view_top != t->view_top) {
         k64_render_text_area();
     }
 }
@@ -253,11 +267,13 @@ static void terminal64_put_char_internal(terminal64_session_t* t, char c) {
 
     if (c == '\n') {
         terminal64_newline_internal(t);
+        terminal64_mark_gui_dirty();
         return;
     }
 
     if (c == '\r') {
         t->cursor_col = 0;
+        terminal64_mark_gui_dirty();
         return;
     }
 
@@ -283,13 +299,17 @@ static void terminal64_put_char_internal(terminal64_session_t* t, char c) {
 
     t->buffer[t->cursor_row][t->cursor_col] = term64_make_cell(c);
 
-    k64_draw_terminal_cell(t, t->cursor_row, t->cursor_col);
+    if (!g_terminal64_gui_mode) {
+        k64_draw_terminal_cell(t, t->cursor_row, t->cursor_col);
+    }
 
     t->cursor_col++;
 
     if (t->cursor_col >= g_cols || t->cursor_col >= TERM64_MAX_COLS) {
         terminal64_newline_internal(t);
     }
+
+    terminal64_mark_gui_dirty();
 }
 
 void terminal64_put_char(terminal64_session_t* t, char c) {
@@ -343,7 +363,11 @@ static void terminal64_backspace_internal(terminal64_session_t* t) {
     t->buffer[t->cursor_row][t->cursor_col] = term64_make_cell(' ');
     terminal64_ensure_cursor_visible(t);
 
-    k64_draw_terminal_cell(t, t->cursor_row, t->cursor_col);
+    if (!g_terminal64_gui_mode) {
+        k64_draw_terminal_cell(t, t->cursor_row, t->cursor_col);
+    }
+
+    terminal64_mark_gui_dirty();
 }
 
 void terminal64_init_system(nq_u32 cols, nq_u32 visible_rows) {
@@ -405,7 +429,12 @@ void terminal64_switch(terminal64_session_t* t) {
 
     g_active_terminal = t;
 
-    if (fb64_available()) {
+    if (g_terminal64_gui_mode) {
+        terminal64_mark_gui_dirty();
+        return;
+    }
+
+    if (!g_terminal64_gui_mode && fb64_available()) {
         fb64_clear(k64_bg_color());
         k64_draw_header();
         k64_render_text_area();
@@ -430,6 +459,340 @@ nq_u32 terminal64_visible_rows(void) {
 
 nq_u32 terminal64_cols(void) {
     return g_cols;
+}
+
+void terminal64_set_gui_mode(int enabled) {
+    g_terminal64_gui_mode = enabled ? 1 : 0;
+
+    if (g_terminal64_gui_mode) {
+        g_terminal64_gui_dirty = 1;
+    }
+}
+
+int terminal64_gui_mode(void) {
+    return g_terminal64_gui_mode;
+}
+
+void terminal64_mark_gui_dirty(void) {
+    if (g_terminal64_gui_mode) {
+        g_terminal64_gui_dirty = 1;
+    }
+}
+
+int terminal64_take_gui_dirty(void) {
+    int dirty = g_terminal64_gui_dirty;
+    g_terminal64_gui_dirty = 0;
+    return dirty;
+}
+
+static void terminal64_draw_gui_char(
+    int x,
+    int y,
+    char c,
+    nq_u32 fg,
+    nq_u32 bg
+) {
+    const unsigned char* glyph;
+
+    if (!fb64_available()) {
+        return;
+    }
+
+    glyph = font8x8_get(c);
+
+    for (int gy = 0; gy < 8; gy++) {
+        unsigned char bits = glyph[gy];
+
+        for (int gx = 0; gx < 8; gx++) {
+            int px = x + gx;
+            int py0 = y + gy * 2;
+            int py1 = py0 + 1;
+            nq_u32 color = (bits & (0x80u >> gx)) ? fg : bg;
+
+            if (px >= 0 && py0 >= 0 &&
+                px < (int)fb64_width() &&
+                py0 < (int)fb64_height()) {
+                fb64_put_pixel((nq_u32)px, (nq_u32)py0, color);
+            }
+
+            if (px >= 0 && py1 >= 0 &&
+                px < (int)fb64_width() &&
+                py1 < (int)fb64_height()) {
+                fb64_put_pixel((nq_u32)px, (nq_u32)py1, color);
+            }
+        }
+    }
+}
+
+
+static void terminal64_fill_xrgb32_rect(
+    nq_u32* dst,
+    nq_u32 dst_width,
+    nq_u32 dst_height,
+    int x,
+    int y,
+    int w,
+    int h,
+    nq_u32 color
+) {
+    if (!dst || dst_width == 0 || dst_height == 0 || w <= 0 || h <= 0) {
+        return;
+    }
+
+    int x0 = x;
+    int y0 = y;
+    int x1 = x + w;
+    int y1 = y + h;
+
+    if (x0 < 0) {
+        x0 = 0;
+    }
+
+    if (y0 < 0) {
+        y0 = 0;
+    }
+
+    if (x1 > (int)dst_width) {
+        x1 = (int)dst_width;
+    }
+
+    if (y1 > (int)dst_height) {
+        y1 = (int)dst_height;
+    }
+
+    if (x1 <= x0 || y1 <= y0) {
+        return;
+    }
+
+    for (int yy = y0; yy < y1; yy++) {
+        nq_u32* row = dst + ((nq_u32)yy * dst_width);
+
+        for (int xx = x0; xx < x1; xx++) {
+            row[(nq_u32)xx] = color;
+        }
+    }
+}
+
+static void terminal64_draw_gui_char_to_xrgb32(
+    nq_u32* dst,
+    nq_u32 dst_width,
+    nq_u32 dst_height,
+    int x,
+    int y,
+    char c,
+    nq_u32 fg,
+    nq_u32 bg
+) {
+    const unsigned char* glyph;
+
+    if (!dst || dst_width == 0 || dst_height == 0) {
+        return;
+    }
+
+    glyph = font8x8_get(c);
+
+    for (int gy = 0; gy < 8; gy++) {
+        unsigned char bits = glyph[gy];
+
+        for (int gx = 0; gx < 8; gx++) {
+            int px = x + gx;
+            int py0 = y + gy * 2;
+            int py1 = py0 + 1;
+            nq_u32 color = (bits & (0x80u >> gx)) ? fg : bg;
+
+            if (px >= 0 && py0 >= 0 &&
+                px < (int)dst_width &&
+                py0 < (int)dst_height) {
+                dst[(nq_u32)py0 * dst_width + (nq_u32)px] = color;
+            }
+
+            if (px >= 0 && py1 >= 0 &&
+                px < (int)dst_width &&
+                py1 < (int)dst_height) {
+                dst[(nq_u32)py1 * dst_width + (nq_u32)px] = color;
+            }
+        }
+    }
+}
+
+void terminal64_render_into_buffer(
+    terminal64_session_t* t,
+    nq_u32* dst,
+    nq_u32 dst_width,
+    nq_u32 dst_height,
+    int x,
+    int y,
+    int w,
+    int h
+) {
+    if (!t || !dst || dst_width == 0 || dst_height == 0) {
+        return;
+    }
+
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+
+    int cols = w / (int)K64_CELL_W;
+    int rows = h / (int)K64_CELL_H;
+
+    if (cols <= 0 || rows <= 0) {
+        return;
+    }
+
+    if (cols > (int)TERM64_MAX_COLS) {
+        cols = (int)TERM64_MAX_COLS;
+    }
+
+    /*
+     * XRGB32 compositor colors: 0x00RRGGBB.
+     */
+    nq_u32 bg = 0x00030A10u;
+    nq_u32 fg = 0x00DCF5FFu;
+    nq_u32 cursor = 0x0050D2FFu;
+
+    terminal64_fill_xrgb32_rect(dst, dst_width, dst_height, x, y, w, h, bg);
+
+    nq_u32 start_row = t->view_top;
+
+    if (t->cursor_row >= (nq_u32)rows) {
+        nq_u32 wanted = t->cursor_row - (nq_u32)rows + 1u;
+
+        if (wanted > start_row) {
+            start_row = wanted;
+        }
+    }
+
+    if (start_row >= TERM64_HISTORY_ROWS) {
+        start_row = TERM64_HISTORY_ROWS - 1;
+    }
+
+    for (int r = 0; r < rows; r++) {
+        nq_u32 buffer_row = start_row + (nq_u32)r;
+
+        if (buffer_row >= TERM64_HISTORY_ROWS) {
+            break;
+        }
+
+        for (int c = 0; c < cols; c++) {
+            char ch = term64_cell_char(t->buffer[buffer_row][c]);
+
+            if (ch != ' ') {
+                terminal64_draw_gui_char_to_xrgb32(
+                    dst,
+                    dst_width,
+                    dst_height,
+                    x + c * (int)K64_CELL_W,
+                    y + r * (int)K64_CELL_H,
+                    ch,
+                    fg,
+                    bg
+                );
+            }
+        }
+    }
+
+    if (t->cursor_row >= start_row &&
+        t->cursor_row < start_row + (nq_u32)rows &&
+        t->cursor_col < (nq_u32)cols) {
+        int cx = x + (int)t->cursor_col * (int)K64_CELL_W;
+        int cy = y + (int)(t->cursor_row - start_row) * (int)K64_CELL_H;
+
+        terminal64_fill_xrgb32_rect(
+            dst,
+            dst_width,
+            dst_height,
+            cx,
+            cy + (int)K64_CELL_H - 2,
+            (int)K64_CELL_W,
+            2,
+            cursor
+        );
+    }
+}
+
+void terminal64_render_into_rect(
+    terminal64_session_t* t,
+    int x,
+    int y,
+    int w,
+    int h
+) {
+    if (!t || !fb64_available()) {
+        return;
+    }
+
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+
+    int cols = w / (int)K64_CELL_W;
+    int rows = h / (int)K64_CELL_H;
+
+    if (cols <= 0 || rows <= 0) {
+        return;
+    }
+
+    if (cols > (int)TERM64_MAX_COLS) {
+        cols = (int)TERM64_MAX_COLS;
+    }
+
+    nq_u32 bg = fb64_make_color(3, 10, 16);
+    nq_u32 fg = fb64_make_color(220, 245, 255);
+    nq_u32 cursor = fb64_make_color(80, 210, 255);
+
+    fb64_fill_rect((nq_u32)x, (nq_u32)y, (nq_u32)w, (nq_u32)h, bg);
+
+    nq_u32 start_row = t->view_top;
+
+    if (t->cursor_row >= (nq_u32)rows) {
+        nq_u32 wanted = t->cursor_row - (nq_u32)rows + 1u;
+
+        if (wanted > start_row) {
+            start_row = wanted;
+        }
+    }
+
+    if (start_row >= TERM64_HISTORY_ROWS) {
+        start_row = TERM64_HISTORY_ROWS - 1;
+    }
+
+    for (int r = 0; r < rows; r++) {
+        nq_u32 buffer_row = start_row + (nq_u32)r;
+
+        if (buffer_row >= TERM64_HISTORY_ROWS) {
+            break;
+        }
+
+        for (int c = 0; c < cols; c++) {
+            char ch = term64_cell_char(t->buffer[buffer_row][c]);
+
+            if (ch != ' ') {
+                terminal64_draw_gui_char(
+                    x + c * (int)K64_CELL_W,
+                    y + r * (int)K64_CELL_H,
+                    ch,
+                    fg,
+                    bg
+                );
+            }
+        }
+    }
+
+    if (t->cursor_row >= start_row &&
+        t->cursor_row < start_row + (nq_u32)rows &&
+        t->cursor_col < (nq_u32)cols) {
+        int cx = x + (int)t->cursor_col * (int)K64_CELL_W;
+        int cy = y + (int)(t->cursor_row - start_row) * (int)K64_CELL_H;
+
+        fb64_fill_rect(
+            (nq_u32)cx,
+            (nq_u32)(cy + K64_CELL_H - 2),
+            K64_CELL_W,
+            2,
+            cursor
+        );
+    }
 }
 
 void terminal64_print_summary(void) {
@@ -461,11 +824,20 @@ void terminal64_print_summary(void) {
 void k64_clear_screen(void) {
     terminal64_session_t* t = g_active_terminal;
 
-    if (!fb64_available() || !t) {
+    if (!t) {
         return;
     }
 
     terminal64_clear_session(t);
+
+    if (g_terminal64_gui_mode) {
+        terminal64_mark_gui_dirty();
+        return;
+    }
+
+    if (!fb64_available()) {
+        return;
+    }
 
     fb64_clear(k64_bg_color());
     k64_draw_header();

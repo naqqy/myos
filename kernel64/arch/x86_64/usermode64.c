@@ -4,7 +4,7 @@
 #include "../../mm/kmem64.h"
 #include "../../mm/paging64.h"
 
-#define USERMODE64_TEST_STACK_SIZE (16u * 1024u)
+#define USERMODE64_TEST_STACK_SIZE (64u * 1024u)
 
 extern void usermode64_enter(nq_u64 user_rip, nq_u64 user_rsp);
 extern void usermode64_test_entry(void);

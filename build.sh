@@ -238,6 +238,9 @@ KERNEL64_BOOTLOG_OBJ="$BUILD_DIR/bootlog64.o"
 KERNEL64_BOOTDIAG_C="$KERNEL64_DIR/debug/boot_diag64.c"
 KERNEL64_BOOTDIAG_OBJ="$BUILD_DIR/boot_diag64.o"
 
+KERNEL64_GUI_C="$KERNEL64_DIR/gui/gui64.c"
+KERNEL64_GUI_OBJ="$BUILD_DIR/gui64.o"
+
 # ------------------------------------------------------------
 # Assets / initrd / user apps
 # ------------------------------------------------------------
@@ -295,6 +298,8 @@ HARDWARE_SAFE_DIR="$BUILD_DIR/hardware-safe"
 
 NASM="${NASM:-nasm}"
 GCC="${GCC:-gcc}"
+CC="${CC:-$GCC}"
+AS="${AS:-$NASM}"
 LD="${LD:-ld}"
 OBJCOPY="${OBJCOPY:-objcopy}"
 PYTHON3="${PYTHON3:-python3}"
@@ -337,7 +342,7 @@ GCC64_FLAGS=(
   -Igraphics
   -ffreestanding
   -fno-pie
-  -fno-stack-protector
+  -fstack-protector-all
   -mno-red-zone
   -mgeneral-regs-only
   -nostdlib
@@ -777,6 +782,14 @@ build_kernel64() {
 
   compile64_c "Compiling 64-bit shell" "$KERNEL64_SHELL_C" "$KERNEL64_SHELL_OBJ"
 
+  compile64_c "Compiling 64-bit GUI compositor" "$KERNEL64_GUI_C" "$KERNEL64_GUI_OBJ"
+
+  echo "==> Compiling 64-bit stack protector runtime"
+  "$GCC" "${GCC64_FLAGS[@]}" \
+    -fno-stack-protector \
+    kernel64/security/stack_chk64.c \
+    -o build/stack_chk64.o
+
   msg "Linking 64-bit kernel ELF"
   "$LD" \
     -m elf_x86_64 \
@@ -816,7 +829,9 @@ build_kernel64() {
     "$KERNEL64_SYSCALL_ASM_OBJ" \
     "$KERNEL64_USERCOPY_OBJ" \
     "$KERNEL64_ELF_OBJ" \
-    "$KERNEL64_SHELL_OBJ"
+    "$KERNEL64_SHELL_OBJ" \
+    "$KERNEL64_GUI_OBJ" \
+    build/stack_chk64.o
 
   msg "Converting 64-bit kernel ELF to flat binary"
   "$OBJCOPY" -O binary "$KERNEL64_ELF" "$KERNEL64_BIN"
@@ -1431,7 +1446,7 @@ run_qemu_uefi() {
 
   "$QEMU64" \
     -machine pc \
-    -m 256M \
+    -m 1024M \
     -cpu qemu64 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive if=pflash,format=raw,file="$OVMF_VARS" \

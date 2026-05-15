@@ -9,9 +9,8 @@ static nq_u64 pmm64_usable_frame_count = 0;
 static nq_u64 pmm64_next_search = 0;
 static int pmm64_ready = 0;
 
-#define PMM64_EARLY_KERNEL_RESERVE_SIZE (16ull * 1024ull * 1024ull)
-#define PMM64_POC_USER_BASE             0x02000000ull
-#define PMM64_POC_USER_SIZE             0x02000000ull
+#define PMM64_EARLY_KERNEL_RESERVE_SIZE (96ull * 1024ull * 1024ull)
+/* Fixed POC user physical reservation removed by per-process VM. */
 
 static nq_u64 align_down64(nq_u64 value, nq_u64 align) {
     return value & ~(align - 1ull);
@@ -258,10 +257,10 @@ static void pmm64_reserve_boot_regions(const naq_boot_info_t* boot) {
     }
 
     /*
-     * The current ELF64 loader uses a fixed identity-mapped POC user window.
-     * Keep those physical frames out of the kernel heap/PMM pool.
+     * Per-process user address spaces now allocate normal PMM frames for
+     * user code/data/stack, so the old fixed POC user physical reservation
+     * is no longer needed.
      */
-    pmm64_reserve_region(PMM64_POC_USER_BASE, PMM64_POC_USER_SIZE);
 }
 
 int pmm64_init(const naq_boot_info_t* boot) {
@@ -344,6 +343,10 @@ nq_u64 pmm64_alloc_frame(void) {
         }
     }
 
+    k64_print("PMM64: out of free frames. free_frames=");
+    k64_print_dec64(pmm64_free_frames());
+    k64_print("\n");
+
     return 0;
 }
 
@@ -424,6 +427,12 @@ nq_u64 pmm64_alloc_contiguous_frames(nq_u64 frame_count) {
             return frame * PMM64_FRAME_SIZE;
         }
     }
+
+    k64_print("PMM64: contiguous allocation failed. frames=");
+    k64_print_dec64(frame_count);
+    k64_print(" free_frames=");
+    k64_print_dec64(pmm64_free_frames());
+    k64_print("\n");
 
     return 0;
 }
@@ -516,4 +525,10 @@ void pmm64_print_summary(void) {
     k64_print("Bitmap size: ");
     k64_print_dec64(sizeof(pmm64_bitmap));
     k64_print(" bytes\n");
+
+    k64_print("Kernel early reserve: ");
+    k64_print_dec64(PMM64_EARLY_KERNEL_RESERVE_SIZE);
+    k64_print(" bytes\n");
+
+    k64_print("POC user reserve: removed; user pages are allocated per-process.\n");
 }

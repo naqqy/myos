@@ -16,6 +16,26 @@ int paging64_init(const naq_boot_info_t* boot);
 int paging64_identity_map_range(nq_u64 base, nq_u64 length, nq_u64 flags);
 
 nq_u64 paging64_kernel_pml4(void);
+nq_u64 paging64_current_pml4(void);
+void   paging64_switch_pml4(nq_u64 pml4_phys);
+
+nq_u64 paging64_create_user_address_space(void);
+void   paging64_destroy_user_address_space(nq_u64 pml4_phys);
+
+int paging64_map_user_page(
+    nq_u64 pml4_phys,
+    nq_u64 virt,
+    nq_u64 phys,
+    nq_u64 flags
+);
+
+int paging64_alloc_map_user_range(
+    nq_u64 pml4_phys,
+    nq_u64 virt,
+    nq_u64 size,
+    nq_u64 flags
+);
+
 nq_u64 paging64_mapped_2m_pages(void);
 nq_u64 paging64_table_pages(void);
 

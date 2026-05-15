@@ -39,6 +39,21 @@
 #define PF_R          4
 
 /*
+ * Capacity pass:
+ * Keep the old fixed-address POC model, but give apps a larger fixed window
+ * and a larger user stack while real per-process address spaces are pending.
+ */
+#ifdef ELF64_USER_STACK_SIZE
+#undef ELF64_USER_STACK_SIZE
+#endif
+#define ELF64_USER_STACK_SIZE (256ull * 1024ull)
+
+#ifdef ELF64_MAX_IMAGE_SIZE
+#undef ELF64_MAX_IMAGE_SIZE
+#endif
+#define ELF64_MAX_IMAGE_SIZE (2ull * 1024ull * 1024ull)
+
+/*
  * POC user app area.
  *
  * Because paging is still identity-mapped 2 MiB pages, choose a simple
@@ -47,7 +62,7 @@
  * Later, this should become a real per-process user address space.
  */
 #define ELF64_USER_MIN_ADDR 0x02000000ull
-#define ELF64_USER_MAX_ADDR 0x04000000ull
+#define ELF64_USER_MAX_ADDR 0x06000000ull
 #define ELF64_USER_STACK_TOP ELF64_USER_MAX_ADDR
 #define ELF64_USER_STACK_BASE (ELF64_USER_STACK_TOP - ELF64_USER_STACK_SIZE)
 
@@ -284,10 +299,27 @@ static int elf64_validate_load_segment(
 static int elf64_load_segments(
     const elf64_ehdr_t* eh,
     const nq_u8* file,
-    nq_u64 file_size
+    nq_u64 file_size,
+    nq_u64* out_image_base,
+    nq_u64* out_image_size
 ) {
     const elf64_phdr_t* ph =
         (const elf64_phdr_t*)(file + eh->e_phoff);
+
+    nq_u64 image_min = 0xFFFFFFFFFFFFFFFFull;
+    nq_u64 image_max = 0;
+
+    process64_task_t* current = process64_current();
+
+    if (!current) {
+        return 0;
+    }
+
+    nq_u64 pml4_phys = process64_current_pml4();
+
+    if (!pml4_phys) {
+        return 0;
+    }
 
     for (nq_u32 i = 0; i < eh->e_phnum; i++) {
         if (!elf64_validate_load_segment(&ph[i], file_size)) {
@@ -309,21 +341,6 @@ static int elf64_load_segments(
         elf64_debug_dec(" memsz=", ph[i].p_memsz);
         elf64_debug("\n");
 
-        /*
-         * POC:
-         * The destination virtual address is identity-mapped to physical memory.
-         * Clear BSS first, then copy file bytes.
-         */
-        mem_zero64(dst, ph[i].p_memsz);
-
-        if (ph[i].p_filesz > 0) {
-            mem_copy64(dst, src, ph[i].p_filesz);
-        }
-
-        /*
-         * Mark loaded segment as user-accessible.
-         * Current paging64 marks at 2 MiB granularity.
-         */
         nq_u64 seg_start = ph[i].p_vaddr & ~0xFFFull;
         nq_u64 seg_end = ph[i].p_vaddr + ph[i].p_memsz;
 
@@ -334,8 +351,12 @@ static int elf64_load_segments(
 
         seg_end = (seg_end + 0xFFFu) & ~0xFFFull;
 
-        if (!paging64_mark_user_range(seg_start, seg_end - seg_start)) {
-            k64_print("elf64: failed to mark segment user-accessible\n");
+        if (!paging64_alloc_map_user_range(
+                pml4_phys,
+                seg_start,
+                seg_end - seg_start,
+                PAGE64_USER | PAGE64_WRITABLE)) {
+            k64_print("elf64: failed to allocate/map segment\n");
             k64_print("range=");
             k64_print_hex64(seg_start);
             k64_print("..");
@@ -343,10 +364,43 @@ static int elf64_load_segments(
             k64_print("\n");
             return 0;
         }
+
+        /*
+         * The task is already running on its own CR3. After mapping the
+         * segment, copying to p_vaddr writes into this process's private
+         * physical pages.
+         */
+        mem_zero64(dst, ph[i].p_memsz);
+
+        if (ph[i].p_filesz > 0) {
+            mem_copy64(dst, src, ph[i].p_filesz);
+        }
+
+        if (seg_start < image_min) {
+            image_min = seg_start;
+        }
+
+        if (seg_end > image_max) {
+            image_max = seg_end;
+        }
+    }
+
+    if (image_min == 0xFFFFFFFFFFFFFFFFull || image_max <= image_min) {
+        k64_print("elf64: no loadable image range\n");
+        return 0;
+    }
+
+    if (out_image_base) {
+        *out_image_base = image_min;
+    }
+
+    if (out_image_size) {
+        *out_image_size = image_max - image_min;
     }
 
     return 1;
 }
+
 
 static int elf64_entry_is_valid(const elf64_ehdr_t* eh) {
     if (!eh) {
@@ -363,6 +417,8 @@ static int elf64_entry_is_valid(const elf64_ehdr_t* eh) {
 
 int elf64_exec_file(const char* path) {
     nq_u64 file_size = 0;
+    nq_u64 image_base = 0;
+    nq_u64 image_size = 0;
 
     if (!path || !path[0]) {
         k64_print("elf64: missing path\n");
@@ -378,7 +434,9 @@ int elf64_exec_file(const char* path) {
             g_elf64_file_buf,
             ELF64_MAX_IMAGE_SIZE,
             &file_size)) {
-        k64_print("elf64: read failed or file too large\n");
+        k64_print("elf64: read failed or file too large. max=");
+        k64_print_dec64(ELF64_MAX_IMAGE_SIZE);
+        k64_print(" bytes\n");
         return 0;
     }
 
@@ -393,7 +451,22 @@ int elf64_exec_file(const char* path) {
         return 0;
     }
 
-    if (!elf64_load_segments(eh, g_elf64_file_buf, file_size)) {
+    /*
+     * Create and switch to this task's private user address space before
+     * mapping/copying ELF segments. From this point on, writes to the fixed
+     * ELF virtual addresses go into this process's private physical pages.
+     */
+    if (!process64_current_create_user_address_space()) {
+        k64_print("elf64: failed to create user address space\n");
+        return 0;
+    }
+
+    if (!elf64_load_segments(
+            eh,
+            g_elf64_file_buf,
+            file_size,
+            &image_base,
+            &image_size)) {
         return 0;
     }
 
@@ -402,10 +475,30 @@ int elf64_exec_file(const char* path) {
 
     user_stack_top &= ~0xFull;
 
+    if (!paging64_alloc_map_user_range(
+            process64_current_pml4(),
+            user_stack_base,
+            ELF64_USER_STACK_SIZE,
+            PAGE64_USER | PAGE64_WRITABLE)) {
+        k64_print("elf64: failed to allocate/map user stack\n");
+        return 0;
+    }
+
     mem_zero64((void*)user_stack_base, ELF64_USER_STACK_SIZE);
 
-    if (!paging64_mark_user_range(user_stack_base, ELF64_USER_STACK_SIZE)) {
-        k64_print("elf64: failed to mark user stack\n");
+    /*
+     * POC multi-app support:
+     *
+     * Apps are still linked to the same fixed user address range.
+     * Save this app's loaded image and stack so the scheduler can swap
+     * those fixed addresses when switching between multiple GUI apps.
+     */
+    if (!process64_user_memory_setup(
+            image_base,
+            image_size,
+            user_stack_base,
+            ELF64_USER_STACK_SIZE)) {
+        k64_print("elf64: failed to setup user memory swap state\n");
         return 0;
     }
 

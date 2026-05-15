@@ -31,4 +31,33 @@ nq_u32 terminal64_cols(void);
 
 void terminal64_print_summary(void);
 
+/*
+ * GUI terminal rendering support.
+ * When GUI mode is enabled, terminal writes update the session buffer but
+ * do not draw directly to the framebuffer text console.
+ */
+void terminal64_set_gui_mode(int enabled);
+int  terminal64_gui_mode(void);
+void terminal64_mark_gui_dirty(void);
+int  terminal64_take_gui_dirty(void);
+
+void terminal64_render_into_rect(
+    terminal64_session_t* t,
+    int x,
+    int y,
+    int w,
+    int h
+);
+
+void terminal64_render_into_buffer(
+    terminal64_session_t* t,
+    nq_u32* dst,
+    nq_u32 dst_width,
+    nq_u32 dst_height,
+    int x,
+    int y,
+    int w,
+    int h
+);
+
 #endif

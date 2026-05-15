@@ -265,8 +265,31 @@ static void print_u64(u64 value) {
     }
 }
 
+static void handle_window_events(int win, int* running) {
+    naq_win_event_t ev;
+
+    for (;;) {
+        int r = win_get_event(win, &ev);
+
+        if (r <= 0) {
+            break;
+        }
+
+        if (ev.type == NAQ_WIN_EVENT_CLOSE) {
+            *running = 0;
+            break;
+        }
+
+        if (ev.type == NAQ_WIN_EVENT_KEY) {
+            if (ev.key == 'q' || ev.key == 'Q') {
+                *running = 0;
+                break;
+            }
+        }
+    }
+}
+
 int main(void) {
-    naq_gfx_info_t info;
     naq_frame_timer_t timer;
 
     naq_gfx_buffer_t buffers[2];
@@ -278,14 +301,17 @@ int main(void) {
 
     int running = 1;
 
-    if (gfx_set_mode(GFX_MODE_GRAPHICS) < 0) {
-        puts("cube3d: gfx_set_mode failed\n");
-        return 1;
-    }
+    /*
+     * Windowed version:
+     *
+     * Do not call gfx_set_mode(GFX_MODE_GRAPHICS). That old path asks the
+     * kernel to show the process framebuffer directly. For GUI desktop apps,
+     * create a window and present pixels through SYS_WIN_PRESENT instead.
+     */
+    int win = win_create(120, 90, CUBE_W, CUBE_H, "3D Cube");
 
-    if (gfx_info(&info) < 0) {
-        gfx_set_mode(GFX_MODE_TEXT);
-        puts("cube3d: gfx_info failed\n");
+    if (win < 0) {
+        puts("cube3d: win_create failed\n");
         return 1;
     }
 
@@ -299,38 +325,15 @@ int main(void) {
 
         frame_timer_begin(&timer);
 
-        for (;;) {
-            int c = input_poll_key();
-
-            if (c == 0) {
-                break;
-            }
-
-            if (c == 'q' || c == 'Q') {
-                running = 0;
-                break;
-            }
-        }
+        handle_window_events(win, &running);
 
         draw_background(buf);
         draw_cube(buf, ax, ay, az);
 
         /*
-         * Center a 320x200 render surface on larger framebuffers.
-         * If your framebuffer is smaller, this still clips safely in kernel.
+         * Present into this GUI window. The compositor owns the real screen.
          */
-        int dst_x = 0;
-        int dst_y = 0;
-
-        if (info.width > CUBE_W) {
-            dst_x = (int)((info.width - CUBE_W) / 2);
-        }
-
-        if (info.height > CUBE_H) {
-            dst_y = (int)((info.height - CUBE_H) / 2);
-        }
-
-        gfx_buffer_present(buf, dst_x, dst_y);
+        win_present(win, buf->pixels, CUBE_W, CUBE_H);
 
         current_buffer ^= 1u;
 
@@ -340,11 +343,9 @@ int main(void) {
 
         /*
          * Log timing occasionally to the app terminal.
-         * In graphics view this may not be visible until returning/viewing log,
-         * but it proves frame timing is alive.
          */
         if ((timer.frame_count % 120ull) == 0ull && timer.frame_count != 0ull) {
-            puts("cube frame=");
+            puts("cube window frame=");
             print_u64(timer.frame_count);
             puts(" delta_ms=");
             print_u64(frame_timer_delta_ms(&timer));
@@ -354,8 +355,9 @@ int main(void) {
         frame_timer_end(&timer);
     }
 
-    gfx_set_mode(GFX_MODE_TEXT);
-    puts("3D cube demo done\n");
+    win_destroy(win);
+
+    puts("3D cube window demo done\n");
 
     return 0;
 }

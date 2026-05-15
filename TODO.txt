@@ -316,7 +316,7 @@ WINDOW / GUI SYSTEM PATH
 Goal: make NAQ OS feel like a real graphical OS before/alongside the 3D game path.
 ============================================================
 
-55 Add basic kernel GUI compositor. // HIGH PRIORITY TODO
+55 Add basic kernel GUI compositor. // DONE POC
 desktop background
 window list
 active window tracking
@@ -327,7 +327,7 @@ software compositing to framebuffer
 fixed-position windows first
 keyboard switching first, mouse later
 
-56 Add app window API/syscalls. // HIGH PRIORITY TODO
+56 Add app window API/syscalls. // DONE POC
 SYS_WIN_CREATE
 SYS_WIN_DESTROY
 SYS_WIN_PRESENT
@@ -336,14 +336,14 @@ SYS_WIN_GET_EVENT
 apps render into window-owned buffers
 kernel composites windows to screen
 
-57 Add per-window framebuffer/backbuffer. // HIGH PRIORITY TODO
+57 Add per-window framebuffer/backbuffer. // DONE POC
 allocate window pixel buffers
 clip window drawing
 copy app backbuffer into window buffer
 compositor copies visible window regions to screen
 support dirty rectangles later
 
-58 Add GUI event system. // HIGH PRIORITY TODO
+58 Add GUI event system. // DONE POC
 keyboard events
 mouse events later
 window focus events
@@ -351,15 +351,16 @@ close events
 resize events later
 foreground app receives focused-window input
 
-59 Add shell/desktop integration. // HIGH PRIORITY TODO
+59 Add shell/desktop integration. // DONE POC
 boot into text shell first
 GUI command starts desktop
+keyboard shortcut to return to shell
+basic taskbar/window placeholders
 optional auto-start GUI mode later
 terminal window for shell later
-show running apps/windows
-keyboard shortcut to return to shell
+real running apps/windows list later
 
-60 Add basic GUI widgets. // HIGH PRIORITY TODO
+60 Add basic GUI widgets. // DONE POC
 buttons
 labels
 panels
@@ -367,26 +368,52 @@ simple text drawing
 basic font rendering in windows
 debug window/app launcher later
 
-61 Add graphical terminal window. // HIGH PRIORITY TODO
+61 Add graphical terminal window. // DONE POC
 render terminal session inside a GUI window
 shell terminal as first GUI app
 view process terminals as windows
 scrollback display
 keyboard input routed to focused terminal window
 
-62 Add GUI app demo in C. // HIGH PRIORITY TODO
+62 Add GUI app demo in C. // DONE
 open a window
 draw moving shapes
 handle keyboard input
 present frames
 prove window syscalls work from user mode
 
-63 Add game window/fullscreen mode. // HIGH PRIORITY TODO
+63 Add game window/fullscreen mode. // PARTIAL POC
 allow game to create fullscreen window
 allow game to create bordered window
 toggle fullscreen later
 route keyboard input to game window
 present game frames through compositor or direct fullscreen path
+
+64 Add compositor damage tracking / z-order redraw. // HIGH PRIORITY GUI FIX TODO
+Current issues:
+window/taskbar briefly flashes when a GUI app first starts
+desktop/window flickers during app-window create/destroy
+multiple animated GUI apps can draw over one another
+background animated windows can bypass compositor z-order
+
+Likely cause:
+current fast path lets SYS_WIN_PRESENT blit window content directly to the framebuffer
+first-present/create/destroy paths still use full gui64_render()
+taskbar/window redraws are not damage-tracked
+overlapping windows are not redrawn in correct z-order for dirty regions
+
+Fix:
+track dirty rectangles per window
+track screen-space damage rectangles
+when a window presents:
+  - mark its content dirty
+  - convert window dirty rect to screen-space damage rect
+  - redraw desktop/background under damaged area
+  - redraw all windows overlapping damaged area in z-order
+  - redraw taskbar only if damaged area intersects taskbar
+avoid full taskbar redraw on app create/destroy when possible
+defer taskbar/window-list update until first real present if needed
+optionally add small compositor backbuffer or per-window restore buffer later
 
 
 ============================================================

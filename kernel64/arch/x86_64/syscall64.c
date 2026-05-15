@@ -13,12 +13,17 @@
 
 #include "../../graphics/framebuffer64.h"
 
+#include "../../gui/gui64.h"
+
 static int g_syscall64_initialized = 0;
 
 #define SYSCALL64_WRITE_CHUNK_SIZE 128u
 
 #define SYSCALL64_MAX_PATH 128
 #define SYSCALL64_FILE_TMP_SIZE 8192u
+
+#define SYSCALL64_WIN_MAX_PIXELS (3840u * 2160u)
+static nq_u32 g_syscall64_win_tmp[SYSCALL64_WIN_MAX_PIXELS];
 
 static char g_syscall64_path_buf[SYSCALL64_MAX_PATH];
 static nq_u8 g_syscall64_file_tmp[SYSCALL64_FILE_TMP_SIZE];
@@ -45,6 +50,44 @@ typedef struct syscall64_gfx_blit {
     nq_u32 height;
     const void* pixels;
 } syscall64_gfx_blit_t;
+
+typedef struct syscall64_win_create {
+    int x;
+    int y;
+    nq_u32 width;
+    nq_u32 height;
+    const char* title;
+} syscall64_win_create_t;
+
+typedef struct syscall64_win_create_ex {
+    int x;
+    int y;
+    nq_u32 width;
+    nq_u32 height;
+    const char* title;
+    nq_u32 flags;
+} syscall64_win_create_ex_t;
+
+typedef struct syscall64_win_present {
+    int window_id;
+    nq_u32 width;
+    nq_u32 height;
+    const void* pixels;
+} syscall64_win_present_t;
+
+typedef struct syscall64_win_title {
+    int window_id;
+    const char* title;
+} syscall64_win_title_t;
+
+typedef struct syscall64_win_event {
+    nq_u32 type;
+    nq_u32 key;
+    int x;
+    int y;
+    int w;
+    int h;
+} syscall64_win_event_t;
 
 #define SYSCALL64_GFX_MAX_BLIT_PIXELS (320u * 240u)
 
@@ -648,6 +691,280 @@ void syscall64_handler(syscall64_frame_t* frame) {
         case SYS64_GFX_GET_MODE:
             frame->rax = process64_get_graphics_mode();
             break;
+
+        case SYS64_WIN_CREATE: {
+            syscall64_win_create_t req;
+            char title[32];
+
+            if (!frame->rdi) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!usercopy64_copy_from_user(
+                    &req,
+                    (const void*)frame->rdi,
+                    sizeof(req))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (req.width == 0 || req.height == 0 ||
+                req.width > 1024 || req.height > 768) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            title[0] = 0;
+
+            if (req.title) {
+                if (!syscall64_copy_user_string(req.title, title, sizeof(title))) {
+                    frame->rax = syscall64_error(SYS64_EFAULT);
+                    break;
+                }
+            } else {
+                title[0] = 'A';
+                title[1] = 'p';
+                title[2] = 'p';
+                title[3] = 0;
+            }
+
+            int id = gui64_create_app_window_ex(
+                (int)process64_current_pid(),
+                title,
+                req.x,
+                req.y,
+                (int)req.width,
+                (int)req.height,
+                GUI64_WIN_FLAG_BORDERED
+            );
+
+            if (id < 0) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            frame->rax = (nq_u64)id;
+            break;
+        }
+
+        case SYS64_WIN_CREATE_EX: {
+            syscall64_win_create_ex_t req;
+            char title[32];
+
+            if (!frame->rdi) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!usercopy64_copy_from_user(
+                    &req,
+                    (const void*)frame->rdi,
+                    sizeof(req))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (req.flags & ~(GUI64_WIN_FLAG_BORDERLESS |
+                              GUI64_WIN_FLAG_FULLSCREEN |
+                              GUI64_WIN_FLAG_GAME)) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            if (!(req.flags & GUI64_WIN_FLAG_FULLSCREEN)) {
+                if (req.width == 0 || req.height == 0 ||
+                    req.width > 1024 || req.height > 768) {
+                    frame->rax = syscall64_error(SYS64_EINVAL);
+                    break;
+                }
+            }
+
+            title[0] = 0;
+
+            if (req.title) {
+                if (!syscall64_copy_user_string(req.title, title, sizeof(title))) {
+                    frame->rax = syscall64_error(SYS64_EFAULT);
+                    break;
+                }
+            } else {
+                title[0] = 'A';
+                title[1] = 'p';
+                title[2] = 'p';
+                title[3] = 0;
+            }
+
+            int id = gui64_create_app_window_ex(
+                (int)process64_current_pid(),
+                title,
+                req.x,
+                req.y,
+                (int)req.width,
+                (int)req.height,
+                req.flags
+            );
+
+            if (id < 0) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            frame->rax = (nq_u64)id;
+            break;
+        }
+
+        case SYS64_WIN_PRESENT: {
+            syscall64_win_present_t req;
+
+            if (!frame->rdi) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!usercopy64_copy_from_user(
+                    &req,
+                    (const void*)frame->rdi,
+                    sizeof(req))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!req.pixels || req.width == 0 || req.height == 0) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            nq_u64 count = (nq_u64)req.width * (nq_u64)req.height;
+
+            if (count > SYSCALL64_WIN_MAX_PIXELS) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            nq_u64 bytes = count * sizeof(nq_u32);
+
+            if (!usercopy64_copy_from_user(
+                    g_syscall64_win_tmp,
+                    req.pixels,
+                    bytes)) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!gui64_present_window(
+                    req.window_id,
+                    (int)process64_current_pid(),
+                    g_syscall64_win_tmp,
+                    req.width,
+                    req.height)) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            frame->rax = 0;
+            break;
+        }
+
+        case SYS64_WIN_DESTROY: {
+            int id = (int)frame->rdi;
+
+            if (!gui64_destroy_window(id, (int)process64_current_pid())) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            frame->rax = 0;
+            break;
+        }
+
+        case SYS64_WIN_SET_TITLE: {
+            syscall64_win_title_t req;
+            char title[32];
+
+            if (!frame->rdi) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!usercopy64_copy_from_user(
+                    &req,
+                    (const void*)frame->rdi,
+                    sizeof(req))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!req.title) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            if (!syscall64_copy_user_string(req.title, title, sizeof(title))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!gui64_set_window_title(
+                    req.window_id,
+                    (int)process64_current_pid(),
+                    title)) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            frame->rax = 0;
+            break;
+        }
+
+        case SYS64_WIN_GET_EVENT: {
+            int id = (int)frame->rdi;
+            syscall64_win_event_t* user_event =
+                (syscall64_win_event_t*)frame->rsi;
+
+            if (!user_event) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!gui64_window_belongs_to(id, (int)process64_current_pid())) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            gui64_event_t kev;
+            syscall64_win_event_t ev;
+
+            int has_event = gui64_pop_event(
+                id,
+                (int)process64_current_pid(),
+                &kev
+            );
+
+            ev.type = kev.type;
+            ev.key = kev.key;
+            ev.x = kev.x;
+            ev.y = kev.y;
+            ev.w = kev.w;
+            ev.h = kev.h;
+
+            if (!has_event) {
+                ev.type = 0;
+                ev.key = 0;
+                ev.x = 0;
+                ev.y = 0;
+                ev.w = 0;
+                ev.h = 0;
+            }
+
+            if (!usercopy64_copy_to_user(user_event, &ev, sizeof(ev))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            frame->rax = has_event ? 1u : 0u;
+            break;
+        }
+
 
         default:
             k64_print("\n[user] unknown syscall: ");

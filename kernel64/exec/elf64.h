@@ -10,6 +10,13 @@
 int elf64_exec_file(const char* path);
 
 /*
+ * Per-process address space note:
+ * ELF apps can still be linked at the same fixed virtual addresses, but each
+ * app now runs under its own PML4/CR3 so their code/data/stack pages do not
+ * overwrite each other.
+ */
+
+/*
  * Spawn an ELF app as a process64 task.
  *
  * elf64_spawn_file() keeps the old/background behavior:

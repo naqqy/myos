@@ -28,6 +28,8 @@
 #include "debug/bootlog64.h"
 #include "debug/boot_diag64.h"
 
+#include "gui/gui64.h"
+
 static void halt_forever(void) {
     for (;;) {
         __asm__ volatile ("hlt");
@@ -162,6 +164,8 @@ void kmain64(naq_boot_info_t* boot) {
     if (!vfs64_mount_root()) {
         k64_print("VFS64 mount failed.\n");
     }
+
+    gui64_init();
 
     /*
      * One clean boot summary.

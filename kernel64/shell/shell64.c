@@ -28,6 +28,8 @@
 
 #include "../safety/safe_mode64.h"
 
+#include "../gui/gui64.h"
+
 #define SHELL64_INPUT_MAX 128
 #define SHELL64_FILE_BUFFER_SIZE 65536u
 #define SHELL64_IMAGE_BUFFER_SIZE (1024u * 1024u)
@@ -245,7 +247,8 @@ static void shell64_echo_append(const char* arg) {
 }
 
 static void shell64_prompt(void) {
-    if (g_shell64_graphics_view_active) {
+    if (g_shell64_graphics_view_active &&
+        !gui64_has_focused_terminal_window()) {
         return;
     }
 
@@ -616,7 +619,9 @@ static void shell64_spawn_app(const char* path) {
     path = skip_spaces(path);
 
     if (!path || !path[0]) {
-        k64_print("Usage: spawn <file>\n");
+        if (!g_shell64_graphics_view_active) {
+            k64_print("Usage: spawn <file>\n");
+        }
         return;
     }
 
@@ -626,13 +631,17 @@ static void shell64_spawn_app(const char* path) {
     );
 
     if (pid < 0) {
-        k64_print("spawn: failed to spawn app\n");
+        if (!g_shell64_graphics_view_active) {
+            k64_print("spawn: failed to spawn app\n");
+        }
         return;
     }
 
-    k64_print("spawned pid=");
-    k64_print_dec64((nq_u64)pid);
-    k64_print("\n");
+    if (!g_shell64_graphics_view_active) {
+        k64_print("spawned pid=");
+        k64_print_dec64((nq_u64)pid);
+        k64_print("\n");
+    }
 }
 
 static void shell64_run_app(const char* path) {
@@ -1194,6 +1203,22 @@ static void shell64_execute_command(void) {
     else if (str_eq(arg, "blkdev")) {
         block64_print_devices();
     }
+    else if (str_eq(arg, "gui")) {
+        g_shell64_graphics_view_active = 1;
+        gui64_enter();
+    }
+    else if (str_eq(arg, "text") || str_eq(arg, "textmode")) {
+        g_shell64_graphics_view_active = 0;
+        gui64_exit();
+        terminal64_switch(terminal64_kernel());
+        k64_clear_screen();
+    }
+    else if (str_eq(arg, "guitab")) {
+        gui64_next_window();
+    }
+    else if (str_eq(arg, "guiclose")) {
+        gui64_push_close_to_focused();
+    }
     else if (str_eq(arg, "reboot")) {
         k64_print("Rebooting...\n");
         power64_reboot();
@@ -1220,17 +1245,23 @@ void shell64_init(void) {
 }
 
 void shell64_put_char(char c) {
+    int echo_enabled = !g_shell64_graphics_view_active ||
+        gui64_has_focused_terminal_window();
+
     if (c == '\r') {
         return;
     }
 
     if (c == '\n') {
-        k64_putchar('\n');
+        if (echo_enabled) {
+            k64_putchar('\n');
+        }
 
         shell64_execute_command();
         shell64_clear_input();
 
         shell64_prompt();
+
         return;
     }
 
@@ -1238,7 +1269,10 @@ void shell64_put_char(char c) {
         if (g_input_len > 0) {
             g_input_len--;
             g_input[g_input_len] = 0;
-            k64_backspace();
+
+            if (echo_enabled) {
+                k64_backspace();
+            }
         }
 
         return;
@@ -1259,7 +1293,10 @@ void shell64_put_char(char c) {
     g_input[g_input_len++] = c;
     g_input[g_input_len] = 0;
 
-    k64_putchar(c);
+    if (echo_enabled) {
+        k64_putchar(c);
+    }
+
 }
 
 static void shell64_route_pending_input(void) {
@@ -1272,14 +1309,75 @@ static void shell64_route_pending_input(void) {
 
         if (process64_has_foreground_app()) {
             process64_push_key_to_foreground((char)c);
-        } else {
-            shell64_put_char((char)c);
+            continue;
         }
 
-        process64_reap_zombies();
+        if (gui64_active()) {
+            /*
+             * GUI hotkeys for this POC:
+             *   Tab    cycles focused window
+             *   Ctrl+T returns to terminal/text mode
+             *   Ctrl+Q sends CLOSE to focused app window
+             */
+            if (c == '\t') {
+                gui64_next_window();
+                continue;
+            }
+
+            if (c == 20) { /* Ctrl+T */
+                g_shell64_graphics_view_active = 0;
+                gui64_exit();
+                terminal64_switch(terminal64_kernel());
+                k64_clear_screen();
+                shell64_clear_input();
+                shell64_prompt();
+                continue;
+            }
+
+            if (c == 17) { /* Ctrl+Q */
+                gui64_push_close_to_focused();
+                continue;
+            }
+
+            if (gui64_has_focused_app_window()) {
+                gui64_push_key_to_focused((char)c);
+                continue;
+            }
+
+            if (gui64_has_focused_terminal_window()) {
+                shell64_put_char((char)c);
+                continue;
+            }
+        }
+
+        shell64_put_char((char)c);
     }
 }
 
 void shell64_poll(void) {
     shell64_route_pending_input();
+    process64_reap_zombies();
+
+    /*
+     * Deferred GUI terminal repaint.
+     * Terminal writes mark the terminal dirty; the shell flushes that dirty
+     * state once per poll instead of redrawing the terminal window for every
+     * character typed or printed.
+     */
+    if (gui64_active() && terminal64_take_gui_dirty()) {
+        if (gui64_has_focused_terminal_window()) {
+            gui64_render_focused_terminal_content();
+        } else {
+            gui64_render_terminal_windows();
+        }
+    }
+
+    /*
+     * GUI compositor flush is paced internally. Calling this every poll is
+     * okay; it only draws when a repaint is pending and the frame interval has
+     * elapsed.
+     */
+    if (gui64_active()) {
+        gui64_flush_repaint();
+    }
 }

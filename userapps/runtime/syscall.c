@@ -7,7 +7,7 @@ i64 syscall0(u64 num) {
         "int $0x80"
         : "=a"(ret)
         : "a"(num)
-        : "rcx", "r11", "memory"
+        : "memory"
     );
 
     return ret;
@@ -20,7 +20,7 @@ i64 syscall1(u64 num, u64 a0) {
         "int $0x80"
         : "=a"(ret)
         : "a"(num), "D"(a0)
-        : "rcx", "r11", "memory"
+        : "memory"
     );
 
     return ret;
@@ -33,7 +33,7 @@ i64 syscall2(u64 num, u64 a0, u64 a1) {
         "int $0x80"
         : "=a"(ret)
         : "a"(num), "D"(a0), "S"(a1)
-        : "rcx", "r11", "memory"
+        : "memory"
     );
 
     return ret;
@@ -46,7 +46,7 @@ i64 syscall3(u64 num, u64 a0, u64 a1, u64 a2) {
         "int $0x80"
         : "=a"(ret)
         : "a"(num), "D"(a0), "S"(a1), "d"(a2)
-        : "rcx", "r11", "memory"
+        : "memory"
     );
 
     return ret;
@@ -56,21 +56,12 @@ void exit(int code) {
     syscall1(SYS64_EXIT, (u64)code);
 
     for (;;) {
-        __asm__ volatile ("hlt");
+        syscall0(SYS64_YIELD);
     }
 }
 
 i64 write(int fd, const void* buf, size_t len) {
-    /*
-     * Current kernel SYS_WRITE ABI:
-     *   RAX = SYS64_WRITE
-     *   RDI = user buffer
-     *   RSI = length
-     *
-     * fd is ignored for now.
-     */
     (void)fd;
-
     return syscall2(SYS64_WRITE, (u64)buf, (u64)len);
 }
 
@@ -172,9 +163,90 @@ int gfx_blit(i32 x, i32 y, const void* pixels, u32 width, u32 height) {
 }
 
 int gfx_set_mode(u32 mode) {
-    return (int)syscall1(SYS64_GFX_SET_MODE, mode);
+    return (int)syscall1(SYS64_GFX_SET_MODE, (u64)mode);
 }
 
 u32 gfx_get_mode(void) {
     return (u32)syscall0(SYS64_GFX_GET_MODE);
+}
+
+int win_create(i32 x, i32 y, u32 width, u32 height, const char* title) {
+    naq_win_create_t req;
+
+    req.x = x;
+    req.y = y;
+    req.width = width;
+    req.height = height;
+    req.title = title;
+
+    return (int)syscall1(SYS64_WIN_CREATE, (u64)&req);
+}
+
+int win_create_ex(i32 x, i32 y, u32 width, u32 height, const char* title, u32 flags) {
+    naq_win_create_ex_t req;
+
+    req.x = x;
+    req.y = y;
+    req.width = width;
+    req.height = height;
+    req.title = title;
+    req.flags = flags;
+
+    return (int)syscall1(SYS64_WIN_CREATE_EX, (u64)&req);
+}
+
+int win_create_fullscreen(const char* title) {
+    return win_create_ex(
+        0,
+        0,
+        0,
+        0,
+        title,
+        NAQ_WIN_FLAG_FULLSCREEN |
+        NAQ_WIN_FLAG_BORDERLESS |
+        NAQ_WIN_FLAG_GAME
+    );
+}
+
+int win_create_game_window(i32 x, i32 y, u32 width, u32 height, const char* title, int fullscreen) {
+    if (fullscreen) {
+        return win_create_fullscreen(title);
+    }
+
+    return win_create_ex(
+        x,
+        y,
+        width,
+        height,
+        title,
+        NAQ_WIN_FLAG_GAME
+    );
+}
+
+int win_destroy(int window_id) {
+    return (int)syscall1(SYS64_WIN_DESTROY, (u64)window_id);
+}
+
+int win_present(int window_id, const void* pixels, u32 width, u32 height) {
+    naq_win_present_t req;
+
+    req.window_id = window_id;
+    req.width = width;
+    req.height = height;
+    req.pixels = pixels;
+
+    return (int)syscall1(SYS64_WIN_PRESENT, (u64)&req);
+}
+
+int win_set_title(int window_id, const char* title) {
+    naq_win_title_t req;
+
+    req.window_id = window_id;
+    req.title = title;
+
+    return (int)syscall1(SYS64_WIN_SET_TITLE, (u64)&req);
+}
+
+int win_get_event(int window_id, naq_win_event_t* out) {
+    return (int)syscall2(SYS64_WIN_GET_EVENT, (u64)window_id, (u64)out);
 }

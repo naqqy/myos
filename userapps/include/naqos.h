@@ -34,6 +34,12 @@ typedef u64 size_t;
 #define SYS64_GFX_BLIT        16
 #define SYS64_GFX_SET_MODE    17
 #define SYS64_GFX_GET_MODE    18
+#define SYS64_WIN_CREATE      19
+#define SYS64_WIN_DESTROY     20
+#define SYS64_WIN_PRESENT     21
+#define SYS64_WIN_SET_TITLE   22
+#define SYS64_WIN_GET_EVENT   23
+#define SYS64_WIN_CREATE_EX   24
 
 /*
  * File/stat API.
@@ -98,6 +104,60 @@ typedef struct naq_gfx_buffer {
     i32 dirty_x1;
     i32 dirty_y1;
 } naq_gfx_buffer_t;
+
+
+/*
+ * GUI window API.
+ */
+#define NAQ_WIN_EVENT_NONE   0
+#define NAQ_WIN_EVENT_KEY    1
+#define NAQ_WIN_EVENT_FOCUS  2
+#define NAQ_WIN_EVENT_CLOSE  3
+#define NAQ_WIN_EVENT_RESIZE 4
+#define NAQ_WIN_EVENT_MOUSE  5
+
+#define NAQ_WIN_FLAG_BORDERED    0x00000000u
+#define NAQ_WIN_FLAG_BORDERLESS  0x00000001u
+#define NAQ_WIN_FLAG_FULLSCREEN  0x00000002u
+#define NAQ_WIN_FLAG_GAME        0x00000004u
+
+typedef struct naq_win_create {
+    i32 x;
+    i32 y;
+    u32 width;
+    u32 height;
+    const char* title;
+} naq_win_create_t;
+
+typedef struct naq_win_create_ex {
+    i32 x;
+    i32 y;
+    u32 width;
+    u32 height;
+    const char* title;
+    u32 flags;
+} naq_win_create_ex_t;
+
+typedef struct naq_win_present {
+    i32 window_id;
+    u32 width;
+    u32 height;
+    const void* pixels;
+} naq_win_present_t;
+
+typedef struct naq_win_title {
+    i32 window_id;
+    const char* title;
+} naq_win_title_t;
+
+typedef struct naq_win_event {
+    u32 type;
+    u32 key;
+    i32 x;
+    i32 y;
+    i32 w;
+    i32 h;
+} naq_win_event_t;
 
 /*
  * Raw syscall wrappers.
@@ -176,6 +236,15 @@ int gfx_present(const void* pixels, u32 width, u32 height);
 int gfx_blit(i32 x, i32 y, const void* pixels, u32 width, u32 height);
 int gfx_set_mode(u32 mode);
 u32 gfx_get_mode(void);
+
+/*
+ * GUI window syscall wrappers.
+ */
+int win_create(i32 x, i32 y, u32 width, u32 height, const char* title);
+int win_destroy(int window_id);
+int win_present(int window_id, const void* pixels, u32 width, u32 height);
+int win_set_title(int window_id, const char* title);
+int win_get_event(int window_id, naq_win_event_t* out);
 
 /*
  * App-owned backbuffer helpers.

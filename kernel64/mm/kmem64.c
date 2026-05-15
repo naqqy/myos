@@ -4,7 +4,7 @@
 #include "vmem64.h"
 
 #define KMEM64_ALIGN 16ull
-#define KMEM64_MIN_EXPAND_PAGES 4ull
+#define KMEM64_MIN_EXPAND_PAGES 1024ull
 
 typedef struct kmem64_block {
     nq_u64 size;
@@ -129,6 +129,11 @@ static int kmem64_expand(nq_u64 min_payload_bytes) {
     nq_u64 phys = pmm64_alloc_contiguous_frames(pages);
 
     if (!phys) {
+        k64_print("KMEM64: heap expansion failed. pages=");
+        k64_print_dec64(pages);
+        k64_print(" requested=");
+        k64_print_dec64(min_payload_bytes);
+        k64_print(" bytes\n");
         return 0;
     }
 
@@ -207,6 +212,15 @@ void* kmalloc64(nq_u64 size) {
         }
 
         if (!kmem64_expand(size)) {
+            k64_print("KMEM64: kmalloc failed. size=");
+            k64_print_dec64(size);
+            k64_print(" total=");
+            k64_print_dec64(g_heap_total_bytes);
+            k64_print(" used=");
+            k64_print_dec64(g_heap_used_bytes);
+            k64_print(" free=");
+            k64_print_dec64(kmem64_free_bytes());
+            k64_print("\n");
             return 0;
         }
     }
@@ -263,5 +277,9 @@ void kmem64_print_summary(void) {
 
     k64_print("Heap free: ");
     k64_print_dec64(kmem64_free_bytes());
+    k64_print(" bytes\n");
+
+    k64_print("Heap expand chunk: ");
+    k64_print_dec64(KMEM64_MIN_EXPAND_PAGES * PMM64_FRAME_SIZE);
     k64_print(" bytes\n");
 }

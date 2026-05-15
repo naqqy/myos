@@ -9,7 +9,7 @@
 
 #define CANONICAL_LOW_LIMIT 0x0000800000000000ull
 
-#define PAGING64_STATIC_TABLE_PAGES 64u
+#define PAGING64_STATIC_TABLE_PAGES 256u
 #define PAGING64_STATIC_TABLE_BYTES (PAGING64_STATIC_TABLE_PAGES * PAGE64_SIZE_4K)
 
 #define PAGE64_PRESENT  0x001ull
@@ -130,6 +130,474 @@ static nq_u64* alloc_table_page(void) {
     return table;
 }
 
+static nq_u64 paging64_current_pml4_phys_raw(void) {
+    return read_cr3() & PAGE64_ADDR_MASK;
+}
+
+nq_u64 paging64_current_pml4(void) {
+    return paging64_current_pml4_phys_raw();
+}
+
+void paging64_switch_pml4(nq_u64 pml4_phys) {
+    if (!pml4_phys) {
+        pml4_phys = g_pml4_phys;
+    }
+
+    write_cr3(pml4_phys & PAGE64_ADDR_MASK);
+}
+
+static nq_u64* paging64_phys_table_ptr(nq_u64 phys) {
+    if (!phys) {
+        return 0;
+    }
+
+    return (nq_u64*)vmem64_phys_to_ptr(phys & PAGE64_ADDR_MASK);
+}
+
+static nq_u64 paging64_alloc_runtime_table_phys(void) {
+    nq_u64 phys = pmm64_alloc_frame();
+
+    if (!phys) {
+        k64_print("paging64: failed to allocate runtime table page\n");
+        return 0;
+    }
+
+    nq_u64* ptr = paging64_phys_table_ptr(phys);
+
+    if (!ptr) {
+        pmm64_free_frame(phys);
+        return 0;
+    }
+
+    mem_zero64(ptr, PAGE64_SIZE_4K);
+    g_table_pages++;
+
+    return phys;
+}
+
+static void paging64_copy_table(nq_u64* dst, const nq_u64* src) {
+    if (!dst || !src) {
+        return;
+    }
+
+    for (nq_u32 i = 0; i < 512; i++) {
+        dst[i] = src[i];
+    }
+}
+
+
+
+
+static int paging64_clone_user_low_tables(nq_u64* new_pml4) {
+    if (!new_pml4 || !g_pml4) {
+        return 0;
+    }
+
+    /*
+     * User apps currently live below 1 GiB, so clone the low PML4[0]
+     * path before modifying user mappings. This prevents process-specific
+     * user mappings from changing the kernel's shared identity map tables.
+     */
+    nq_u64 old_pml4e = g_pml4[0];
+
+    if (!(old_pml4e & PAGE64_PRESENT)) {
+        return 1;
+    }
+
+    nq_u64 old_pdpt_phys = old_pml4e & PAGE64_ADDR_MASK;
+    nq_u64* old_pdpt = paging64_phys_table_ptr(old_pdpt_phys);
+
+    if (!old_pdpt) {
+        return 0;
+    }
+
+    nq_u64 new_pdpt_phys = paging64_alloc_runtime_table_phys();
+
+    if (!new_pdpt_phys) {
+        return 0;
+    }
+
+    nq_u64* new_pdpt = paging64_phys_table_ptr(new_pdpt_phys);
+    paging64_copy_table(new_pdpt, old_pdpt);
+
+    new_pml4[0] =
+        new_pdpt_phys |
+        (old_pml4e & 0xFFFu);
+
+    /*
+     * Clone PDPT[0] as well; it covers 0..1 GiB where the POC user area
+     * currently resides.
+     */
+    nq_u64 old_pdpte = old_pdpt[0];
+
+    if (old_pdpte & PAGE64_PRESENT) {
+        nq_u64 old_pd_phys = old_pdpte & PAGE64_ADDR_MASK;
+        nq_u64* old_pd = paging64_phys_table_ptr(old_pd_phys);
+
+        if (!old_pd) {
+            pmm64_free_frame(new_pdpt_phys);
+            return 0;
+        }
+
+        nq_u64 new_pd_phys = paging64_alloc_runtime_table_phys();
+
+        if (!new_pd_phys) {
+            pmm64_free_frame(new_pdpt_phys);
+            return 0;
+        }
+
+        nq_u64* new_pd = paging64_phys_table_ptr(new_pd_phys);
+        paging64_copy_table(new_pd, old_pd);
+
+        new_pdpt[0] =
+            new_pd_phys |
+            (old_pdpte & 0xFFFu);
+    }
+
+    return 1;
+}
+
+nq_u64 paging64_create_user_address_space(void) {
+    if (!g_pml4 || !g_pml4_phys) {
+        return 0;
+    }
+
+    nq_u64 pml4_phys = paging64_alloc_runtime_table_phys();
+
+    if (!pml4_phys) {
+        return 0;
+    }
+
+    nq_u64* pml4 = paging64_phys_table_ptr(pml4_phys);
+
+    if (!pml4) {
+        pmm64_free_frame(pml4_phys);
+        return 0;
+    }
+
+    /*
+     * Start with the kernel layout copied in. High/direct-map/kernel entries
+     * stay shared. The low user path is cloned immediately below.
+     */
+    paging64_copy_table(pml4, g_pml4);
+
+    if (!paging64_clone_user_low_tables(pml4)) {
+        pmm64_free_frame(pml4_phys);
+        return 0;
+    }
+
+    return pml4_phys;
+}
+
+static int paging64_get_or_alloc_table_for_user(
+    nq_u64* table,
+    nq_u64 index,
+    nq_u64 entry_flags,
+    nq_u64* out_phys,
+    nq_u64** out_table
+) {
+    if (!table || index >= 512 || !out_phys || !out_table) {
+        return 0;
+    }
+
+    nq_u64 entry = table[index];
+
+    if (entry & PAGE64_PRESENT) {
+        nq_u64 phys = entry & PAGE64_ADDR_MASK;
+        nq_u64* next = paging64_phys_table_ptr(phys);
+
+        if (!next) {
+            return 0;
+        }
+
+        table[index] |= entry_flags;
+
+        *out_phys = phys;
+        *out_table = next;
+        return 1;
+    }
+
+    nq_u64 phys = paging64_alloc_runtime_table_phys();
+
+    if (!phys) {
+        return 0;
+    }
+
+    table[index] =
+        phys |
+        PAGE64_PRESENT |
+        PAGE64_RW |
+        entry_flags;
+
+    *out_phys = phys;
+    *out_table = paging64_phys_table_ptr(phys);
+
+    return *out_table != 0;
+}
+
+int paging64_map_user_page(
+    nq_u64 pml4_phys,
+    nq_u64 virt,
+    nq_u64 phys,
+    nq_u64 flags
+) {
+    if (!pml4_phys || !phys) {
+        return 0;
+    }
+
+    if ((virt & (PAGE64_SIZE_4K - 1ull)) ||
+        (phys & (PAGE64_SIZE_4K - 1ull))) {
+        return 0;
+    }
+
+    if (!is_low_canonical(virt)) {
+        return 0;
+    }
+
+    nq_u64* pml4 = paging64_phys_table_ptr(pml4_phys);
+
+    if (!pml4) {
+        return 0;
+    }
+
+    nq_u64 pml4_i = (virt >> 39) & 0x1FFull;
+    nq_u64 pdpt_i = (virt >> 30) & 0x1FFull;
+    nq_u64 pd_i   = (virt >> 21) & 0x1FFull;
+    nq_u64 pt_i   = (virt >> 12) & 0x1FFull;
+
+    nq_u64 pdpt_phys = 0;
+    nq_u64 pd_phys = 0;
+    nq_u64 pt_phys = 0;
+
+    nq_u64* pdpt = 0;
+    nq_u64* pd = 0;
+    nq_u64* pt = 0;
+
+    if (!paging64_get_or_alloc_table_for_user(
+            pml4,
+            pml4_i,
+            PAGE64_USER,
+            &pdpt_phys,
+            &pdpt)) {
+        return 0;
+    }
+
+    if (!paging64_get_or_alloc_table_for_user(
+            pdpt,
+            pdpt_i,
+            PAGE64_USER,
+            &pd_phys,
+            &pd)) {
+        return 0;
+    }
+
+    nq_u64 pde = pd[pd_i];
+
+    if (pde & PAGE64_PRESENT) {
+        if (pde & PAGE64_PS) {
+            /*
+             * Replace a cloned low identity 2 MiB page with a private
+             * 4 KiB page table for this user process.
+             */
+            pt_phys = paging64_alloc_runtime_table_phys();
+
+            if (!pt_phys) {
+                return 0;
+            }
+
+            pt = paging64_phys_table_ptr(pt_phys);
+
+            if (!pt) {
+                pmm64_free_frame(pt_phys);
+                return 0;
+            }
+
+            pd[pd_i] =
+                pt_phys |
+                PAGE64_PRESENT |
+                PAGE64_RW |
+                PAGE64_USER;
+        } else {
+            pt_phys = pde & PAGE64_ADDR_MASK;
+            pt = paging64_phys_table_ptr(pt_phys);
+
+            if (!pt) {
+                return 0;
+            }
+
+            pd[pd_i] |= PAGE64_USER | PAGE64_RW;
+        }
+    } else {
+        pt_phys = paging64_alloc_runtime_table_phys();
+
+        if (!pt_phys) {
+            return 0;
+        }
+
+        pt = paging64_phys_table_ptr(pt_phys);
+
+        if (!pt) {
+            pmm64_free_frame(pt_phys);
+            return 0;
+        }
+
+        pd[pd_i] =
+            pt_phys |
+            PAGE64_PRESENT |
+            PAGE64_RW |
+            PAGE64_USER;
+    }
+
+    pt[pt_i] =
+        (phys & PAGE64_ADDR_MASK) |
+        PAGE64_PRESENT |
+        PAGE64_USER |
+        PAGE64_RW |
+        (flags & 0xFFFu);
+
+    if ((read_cr3() & PAGE64_ADDR_MASK) == (pml4_phys & PAGE64_ADDR_MASK)) {
+        write_cr3(pml4_phys & PAGE64_ADDR_MASK);
+    }
+
+    return 1;
+}
+
+int paging64_alloc_map_user_range(
+    nq_u64 pml4_phys,
+    nq_u64 virt,
+    nq_u64 size,
+    nq_u64 flags
+) {
+    if (!pml4_phys || size == 0) {
+        return 0;
+    }
+
+    nq_u64 start = align_down64(virt, PAGE64_SIZE_4K);
+    nq_u64 end = align_up64(virt + size, PAGE64_SIZE_4K);
+
+    if (end < start) {
+        return 0;
+    }
+
+    for (nq_u64 va = start; va < end; va += PAGE64_SIZE_4K) {
+        nq_u64 phys = pmm64_alloc_frame();
+
+        if (!phys) {
+            k64_print("paging64: failed to allocate user frame\n");
+            return 0;
+        }
+
+        void* ptr = vmem64_phys_to_ptr(phys);
+
+        if (!ptr) {
+            pmm64_free_frame(phys);
+            return 0;
+        }
+
+        mem_zero64(ptr, PAGE64_SIZE_4K);
+
+        if (!paging64_map_user_page(
+                pml4_phys,
+                va,
+                phys,
+                flags | PAGE64_USER | PAGE64_RW)) {
+            pmm64_free_frame(phys);
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static void paging64_free_user_mappings_in_first_gib(nq_u64 pml4_phys) {
+    nq_u64* pml4 = paging64_phys_table_ptr(pml4_phys);
+
+    if (!pml4) {
+        return;
+    }
+
+    nq_u64 pml4e = pml4[0];
+
+    if (!(pml4e & PAGE64_PRESENT)) {
+        return;
+    }
+
+    nq_u64 pdpt_phys = pml4e & PAGE64_ADDR_MASK;
+    nq_u64* pdpt = paging64_phys_table_ptr(pdpt_phys);
+
+    if (!pdpt) {
+        return;
+    }
+
+    nq_u64 pdpte = pdpt[0];
+
+    if (!(pdpte & PAGE64_PRESENT)) {
+        pmm64_free_frame(pdpt_phys);
+        return;
+    }
+
+    nq_u64 pd_phys = pdpte & PAGE64_ADDR_MASK;
+    nq_u64* pd = paging64_phys_table_ptr(pd_phys);
+
+    if (!pd) {
+        pmm64_free_frame(pdpt_phys);
+        return;
+    }
+
+    nq_u64 start_pd = (VMEM64_USER_BASE >> 21) & 0x1FFull;
+    nq_u64 end_pd = ((VMEM64_USER_LIMIT - 1ull) >> 21) & 0x1FFull;
+
+    for (nq_u64 pd_i = start_pd; pd_i <= end_pd; pd_i++) {
+        nq_u64 pde = pd[pd_i];
+
+        if (!(pde & PAGE64_PRESENT)) {
+            continue;
+        }
+
+        if (pde & PAGE64_PS) {
+            /*
+             * This is a cloned identity mapping, not a user allocation.
+             */
+            continue;
+        }
+
+        nq_u64 pt_phys = pde & PAGE64_ADDR_MASK;
+        nq_u64* pt = paging64_phys_table_ptr(pt_phys);
+
+        if (!pt) {
+            continue;
+        }
+
+        for (nq_u32 pt_i = 0; pt_i < 512; pt_i++) {
+            nq_u64 pte = pt[pt_i];
+
+            if ((pte & PAGE64_PRESENT) && (pte & PAGE64_USER)) {
+                pmm64_free_frame(pte & PAGE64_ADDR_MASK);
+                pt[pt_i] = 0;
+            }
+        }
+
+        pmm64_free_frame(pt_phys);
+        pd[pd_i] = 0;
+    }
+
+    pmm64_free_frame(pd_phys);
+    pmm64_free_frame(pdpt_phys);
+}
+
+void paging64_destroy_user_address_space(nq_u64 pml4_phys) {
+    if (!pml4_phys || pml4_phys == g_pml4_phys) {
+        return;
+    }
+
+    if ((read_cr3() & PAGE64_ADDR_MASK) == (pml4_phys & PAGE64_ADDR_MASK)) {
+        write_cr3(g_pml4_phys);
+    }
+
+    paging64_free_user_mappings_in_first_gib(pml4_phys);
+    pmm64_free_frame(pml4_phys);
+}
+
 int paging64_map_2m_range(
     nq_u64 virt,
     nq_u64 phys,
@@ -241,6 +709,12 @@ void paging64_print_layout(void) {
     k64_print("  2MiB identity map: enabled temporary\n");
     k64_print("  direct map base: ");
     k64_print_hex64(VMEM64_DIRECT_MAP_BASE);
+    k64_print("\n");
+
+    k64_print("  table pool pages: ");
+    k64_print_dec64(PAGING64_STATIC_TABLE_PAGES);
+    k64_print(" used=");
+    k64_print_dec64(paging64_table_pool_used);
     k64_print("\n");
 }
 
@@ -455,8 +929,9 @@ nq_u64 paging64_table_pages(void) {
 }
 
 static nq_u64* paging64_table_from_entry(nq_u64 entry) {
-    return (nq_u64*)(entry & PAGE64_ADDR_MASK);
+    return paging64_phys_table_ptr(entry & PAGE64_ADDR_MASK);
 }
+
 
 int paging64_mark_user_range(nq_u64 virt_addr, nq_u64 size) {
     if (!g_pml4 || size == 0) {
@@ -522,48 +997,77 @@ int paging64_mark_user_range(nq_u64 virt_addr, nq_u64 size) {
 }
 
 static nq_u64* paging64_table_from_entry_checked(nq_u64 entry) {
-    return (nq_u64*)(entry & PAGE64_ADDR_MASK);
+    return paging64_phys_table_ptr(entry & PAGE64_ADDR_MASK);
 }
 
+
 static int paging64_user_addr_accessible(nq_u64 addr) {
-    if (!g_pml4) {
+    nq_u64 cr3 = read_cr3() & PAGE64_ADDR_MASK;
+
+    if (!cr3) {
+        return 0;
+    }
+
+    nq_u64* pml4 = paging64_phys_table_ptr(cr3);
+
+    if (!pml4) {
         return 0;
     }
 
     nq_u64 pml4_i = (addr >> 39) & 0x1FFull;
     nq_u64 pdpt_i = (addr >> 30) & 0x1FFull;
     nq_u64 pd_i   = (addr >> 21) & 0x1FFull;
+    nq_u64 pt_i   = (addr >> 12) & 0x1FFull;
 
-    nq_u64 pml4e = g_pml4[pml4_i];
+    nq_u64 pml4e = pml4[pml4_i];
 
     if (!(pml4e & PAGE64_PRESENT) || !(pml4e & PAGE64_USER)) {
         return 0;
     }
 
-    nq_u64* pdpt = paging64_table_from_entry_checked(pml4e);
+    nq_u64* pdpt = paging64_phys_table_ptr(pml4e & PAGE64_ADDR_MASK);
+
+    if (!pdpt) {
+        return 0;
+    }
+
     nq_u64 pdpte = pdpt[pdpt_i];
 
     if (!(pdpte & PAGE64_PRESENT) || !(pdpte & PAGE64_USER)) {
         return 0;
     }
 
-    nq_u64* pd = paging64_table_from_entry_checked(pdpte);
+    nq_u64* pd = paging64_phys_table_ptr(pdpte & PAGE64_ADDR_MASK);
+
+    if (!pd) {
+        return 0;
+    }
+
     nq_u64 pde = pd[pd_i];
 
     if (!(pde & PAGE64_PRESENT) || !(pde & PAGE64_USER)) {
         return 0;
     }
 
-    /*
-     * Current paging64 uses 2 MiB pages.
-     * If this is not a 2 MiB page, reject for now.
-     */
-    if (!(pde & PAGE64_PS)) {
+    if (pde & PAGE64_PS) {
+        return 1;
+    }
+
+    nq_u64* pt = paging64_phys_table_ptr(pde & PAGE64_ADDR_MASK);
+
+    if (!pt) {
+        return 0;
+    }
+
+    nq_u64 pte = pt[pt_i];
+
+    if (!(pte & PAGE64_PRESENT) || !(pte & PAGE64_USER)) {
         return 0;
     }
 
     return 1;
 }
+
 
 int paging64_user_range_accessible(nq_u64 virt_addr, nq_u64 size) {
     if (size == 0) {
@@ -574,18 +1078,12 @@ int paging64_user_range_accessible(nq_u64 virt_addr, nq_u64 size) {
         return 0;
     }
 
-    /*
-     * Overflow check.
-     */
     nq_u64 end = virt_addr + size - 1u;
 
     if (end < virt_addr) {
         return 0;
     }
 
-    /*
-     * Check first and last byte, then each crossed 2 MiB boundary.
-     */
     if (!paging64_user_addr_accessible(virt_addr)) {
         return 0;
     }
@@ -594,18 +1092,19 @@ int paging64_user_range_accessible(nq_u64 virt_addr, nq_u64 size) {
         return 0;
     }
 
-    nq_u64 page = (virt_addr & ~(PAGE64_2M_SIZE - 1ull)) + PAGE64_2M_SIZE;
+    nq_u64 page = (virt_addr & ~(PAGE64_SIZE_4K - 1ull)) + PAGE64_SIZE_4K;
 
     while (page < end) {
         if (!paging64_user_addr_accessible(page)) {
             return 0;
         }
 
-        page += PAGE64_2M_SIZE;
+        page += PAGE64_SIZE_4K;
     }
 
     return 1;
 }
+
 
 void paging64_print_summary(void) {
     k64_print("Paging64 initialized.\n");
