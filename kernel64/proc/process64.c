@@ -21,6 +21,7 @@ static nq_u32 g_preempt_disable_depth = 0;
 static nq_u64 g_scheduler_ticks = 0;
 static nq_u64 g_preempt_switches = 0;
 static nq_u64 g_preempt_blocked_ticks = 0;
+static nq_u64 g_preempt_consecutive_blocked_ticks = 0;
 
 /*
  * Round-robin quantum in timer ticks.
@@ -229,8 +230,35 @@ void process64_user_memory_restore_current(void) {
     process64_user_memory_restore_task(g_current);
 }
 
+static nq_u64 process64_irq_save_disable(void) {
+    nq_u64 flags;
+
+    __asm__ volatile (
+        "pushfq; pop %0; cli"
+        : "=r"(flags)
+        :
+        : "memory"
+    );
+
+    return flags;
+}
+
+static void process64_irq_restore(nq_u64 flags) {
+    if (flags & 0x200ull) {
+        __asm__ volatile ("sti" ::: "memory");
+    }
+}
+
 static void process64_task_trampoline(void) {
     process64_task_t* task = g_current;
+
+    /*
+     * Every context switch happens with interrupts disabled (timer IRQ or
+     * process64_yield()), so a brand-new task always starts with IF=0.
+     * Turn interrupts on, otherwise a task that never enters ring 3 would
+     * run with the timer and keyboard dead.
+     */
+    __asm__ volatile ("sti");
 
     if (!task || !task->entry) {
         process64_exit();
@@ -328,6 +356,7 @@ void process64_init(void) {
     g_scheduler_ticks = 0;
     g_preempt_switches = 0;
     g_preempt_blocked_ticks = 0;
+    g_preempt_consecutive_blocked_ticks = 0;
     g_quantum_ticks = PROCESS64_DEFAULT_QUANTUM_TICKS;
 
     bootlog64_print("Process64 initialized.\n");
@@ -373,6 +402,13 @@ nq_u64 process64_current_pml4(void) {
     return task->pml4_phys;
 }
 
+static int process64_create_kernel_task_locked(
+    const char* name,
+    process64_entry_t entry,
+    void* arg,
+    nq_u32 flags
+);
+
 int process64_create_kernel_task(
     const char* name,
     process64_entry_t entry,
@@ -400,6 +436,25 @@ int process64_create_kernel_task_ex(
         return -1;
     }
 
+    /*
+     * Task table, heap and terminal allocation are shared state. Keep the
+     * timer from switching tasks until the new task is fully built.
+     */
+    process64_preempt_disable();
+
+    int pid = process64_create_kernel_task_locked(name, entry, arg, flags);
+
+    process64_preempt_enable();
+
+    return pid;
+}
+
+static int process64_create_kernel_task_locked(
+    const char* name,
+    process64_entry_t entry,
+    void* arg,
+    nq_u32 flags
+) {
     process64_task_t* task = 0;
 
     process64_reap_zombies();
@@ -547,13 +602,26 @@ void process64_yield(void) {
         return;
     }
 
+    /*
+     * The switch itself must not be interrupted. process64_switch_to()
+     * updates g_current before it changes stacks; a timer IRQ landing in
+     * between would preempt "the new task" while still running on the old
+     * task's stack and save the wrong RSP into it, destroying that task's
+     * saved context.
+     *
+     * A task always resumes here with IF=0 (it is switched back in from
+     * the timer IRQ or from another task's yield), then restores the
+     * interrupt state it had when it called yield.
+     */
+    nq_u64 flags = process64_irq_save_disable();
+
     process64_task_t* next = process64_pick_next();
 
-    if (!next) {
-        return;
+    if (next) {
+        process64_switch_to(next);
     }
 
-    process64_switch_to(next);
+    process64_irq_restore(flags);
 }
 
 
@@ -576,9 +644,12 @@ void process64_exit(void) {
     process64_yield();
 
     /*
-     * If there was nowhere to yield, stop here.
+     * If there was nowhere to yield, wait here as a zombie. Interrupts must
+     * be on (exit can be reached from an exception handler with IF=0) so
+     * the timer can switch away as soon as another task is ready.
      */
     for (;;) {
+        __asm__ volatile ("sti");
         __asm__ volatile ("hlt");
     }
 }
@@ -636,17 +707,21 @@ int process64_preemption_enabled(void) {
 
 void process64_preempt_disable(void) {
     /*
-     * Single-CPU guard for now. Timer IRQs can still arrive, but
-     * process64_on_timer_tick() will not switch tasks while depth > 0.
+     * Single-CPU kernel preemption guard.
+     *
+     * Timer IRQs may still fire, but process64_on_timer_tick() must not
+     * context-switch while this depth is nonzero.
      */
     g_preempt_disable_depth++;
 }
+
 
 void process64_preempt_enable(void) {
     if (g_preempt_disable_depth > 0) {
         g_preempt_disable_depth--;
     }
 }
+
 
 int process64_preempt_disabled(void) {
     return g_preempt_disable_depth != 0;
@@ -666,15 +741,22 @@ void process64_on_timer_tick(void) {
     }
 
     /*
-     * Timer IRQs are allowed to occur in kernel critical sections, but task
-     * switching is not. This prevents syscalls/GUI paths that use shared
-     * kernel temp buffers from being interrupted by another app entering the
-     * same kernel code.
+     * Critical stability rule:
+     *
+     * Do not switch tasks while kernel/syscall/GUI code is inside a guarded
+     * critical section. This was the root cause of app/window corruption.
+     *
+     * Do not print from here and do not force guard_depth to zero from here.
+     * Printing from a timer IRQ can re-enter console/GUI code, and forcing the
+     * guard open causes underflow when the guarded path returns normally.
      */
     if (process64_preempt_disabled()) {
         g_preempt_blocked_ticks++;
+        g_preempt_consecutive_blocked_ticks++;
         return;
     }
+
+    g_preempt_consecutive_blocked_ticks = 0;
 
     /*
      * Do not try to preempt if there is no other READY task.
@@ -698,6 +780,7 @@ void process64_on_timer_tick(void) {
 }
 
 
+
 void process64_schedule(void) {
     process64_yield();
 }
@@ -719,6 +802,8 @@ void process64_print_summary(void) {
     k64_print_dec64(g_preempt_disable_depth);
     k64_print(" blocked_ticks=");
     k64_print_dec64(g_preempt_blocked_ticks);
+    k64_print(" consecutive_blocked=");
+    k64_print_dec64(g_preempt_consecutive_blocked_ticks);
     k64_print("\n");
 
     k64_print("  max_tasks=");
@@ -1109,11 +1194,26 @@ static void process64_reap_task(process64_task_t* task) {
 }
 
 void process64_reap_zombies(void) {
+    /*
+     * Reaping frees page tables, physical frames, heap blocks and windows.
+     * Do not let the timer switch to an app in the middle of that.
+     */
+    process64_preempt_disable();
+
     for (nq_u32 i = 1; i < PROCESS64_MAX_TASKS; i++) {
+        /*
+         * Never free the stack we are currently running on.
+         */
+        if (&g_tasks[i] == g_current) {
+            continue;
+        }
+
         if (g_tasks[i].state == PROCESS64_ZOMBIE) {
             process64_reap_task(&g_tasks[i]);
         }
     }
+
+    process64_preempt_enable();
 }
 
 int process64_reap_pid(nq_u32 pid) {
@@ -1127,11 +1227,14 @@ int process64_reap_pid(nq_u32 pid) {
         return 0;
     }
 
-    if (task->state != PROCESS64_ZOMBIE) {
+    if (task->state != PROCESS64_ZOMBIE || task == g_current) {
         return 0;
     }
 
+    process64_preempt_disable();
     process64_reap_task(task);
+    process64_preempt_enable();
+
     return 1;
 }
 

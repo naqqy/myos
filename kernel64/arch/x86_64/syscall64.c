@@ -22,8 +22,13 @@ static int g_syscall64_initialized = 0;
 #define SYSCALL64_MAX_PATH 128
 #define SYSCALL64_FILE_TMP_SIZE 8192u
 
+/*
+ * Largest window surface an app may present. The pixels are copied straight
+ * from validated user memory into the window buffer, so no kernel-side
+ * temporary is needed (the old 33 MiB static temp pushed kernel BSS past the
+ * memory the UEFI loader reserves and into the user virtual range).
+ */
 #define SYSCALL64_WIN_MAX_PIXELS (3840u * 2160u)
-static nq_u32 g_syscall64_win_tmp[SYSCALL64_WIN_MAX_PIXELS];
 
 static char g_syscall64_path_buf[SYSCALL64_MAX_PATH];
 static nq_u8 g_syscall64_file_tmp[SYSCALL64_FILE_TMP_SIZE];
@@ -202,12 +207,39 @@ static int syscall64_validate_read_path(const char* path) {
     return 1;
 }
 
+static int syscall64_should_guard_preemption(nq_u64 num) {
+    /*
+     * Do not guard syscalls whose purpose is to block/switch/terminate.
+     * Everything else is protected from timer-based task switching while
+     * using shared kernel syscall buffers.
+     *
+     * SYS64_INPUT_GET_KEY blocks until a key arrives. If it held the guard,
+     * no other task could run while an app waits for input.
+     */
+    switch (num) {
+        case SYS64_EXIT:
+        case SYS64_YIELD:
+        case SYS64_SLEEP:
+        case SYS64_INPUT_GET_KEY:
+            return 0;
+
+        default:
+            return 1;
+    }
+}
+
+
 void syscall64_handler(syscall64_frame_t* frame) {
     if (!frame) {
         return;
     }
 
     nq_u64 num = frame->rax;
+    int preempt_guard = syscall64_should_guard_preemption(num);
+
+    if (preempt_guard) {
+        process64_preempt_disable();
+    }
 
     switch (num) {
         case SYS64_WRITE: {
@@ -236,11 +268,6 @@ void syscall64_handler(syscall64_frame_t* frame) {
                 k64_print_dec64(frame->rdi);
                 k64_print("\n");
             }
-
-            process64_exit();
-
-            frame->rax = 0;
-            break;
 
             process64_exit();
 
@@ -843,10 +870,12 @@ void syscall64_handler(syscall64_frame_t* frame) {
 
             nq_u64 bytes = count * sizeof(nq_u32);
 
-            if (!usercopy64_copy_from_user(
-                    g_syscall64_win_tmp,
-                    req.pixels,
-                    bytes)) {
+            /*
+             * Validate the whole user pixel range, then let the compositor
+             * copy directly from user memory. We are still on this process's
+             * address space and the syscall preemption guard is held.
+             */
+            if (!usercopy64_check_read(req.pixels, bytes)) {
                 frame->rax = syscall64_error(SYS64_EFAULT);
                 break;
             }
@@ -854,7 +883,7 @@ void syscall64_handler(syscall64_frame_t* frame) {
             if (!gui64_present_window(
                     req.window_id,
                     (int)process64_current_pid(),
-                    g_syscall64_win_tmp,
+                    (const nq_u32*)req.pixels,
                     req.width,
                     req.height)) {
                 frame->rax = syscall64_error(SYS64_EINVAL);
@@ -972,6 +1001,10 @@ void syscall64_handler(syscall64_frame_t* frame) {
             k64_print("\n");
             frame->rax = syscall64_error(SYS64_ENOSYS);
             break;
+    }
+
+    if (preempt_guard) {
+        process64_preempt_enable();
     }
 }
 

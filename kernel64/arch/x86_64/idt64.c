@@ -3,6 +3,7 @@
 #include "../../k64_console.h"
 #include "syscall64.h"
 #include "../../debug/bootlog64.h"
+#include "../../proc/process64.h"
 
 #define IDT64_ENTRIES 256
 
@@ -167,6 +168,37 @@ void idt64_install_syscall_gate(void) {
 
 void exception_handler64(interrupt_frame64_t* frame) {
     __asm__ volatile ("cli");
+
+    /*
+     * A fault raised by ring 3 code is the app's problem, not the kernel's.
+     * Report it, kill that process and keep the system running. The task
+     * never resumes, so abandoning this exception stack is fine.
+     */
+    if (frame && (frame->cs & 3u) == 3u && process64_current_pid() != 0) {
+        k64_print("\n[user] pid ");
+        k64_print_dec64(process64_current_pid());
+        k64_print(" killed: ");
+
+        if (frame->vector < 32) {
+            k64_print(exception_names64[frame->vector]);
+        } else {
+            k64_print("Unknown exception");
+        }
+
+        k64_print(" rip=");
+        k64_print_hex64(frame->rip);
+        k64_print(" err=");
+        k64_print_hex64(frame->error_code);
+
+        if (frame->vector == 14) {
+            k64_print(" cr2=");
+            k64_print_hex64(read_cr2());
+        }
+
+        k64_print("\n");
+
+        process64_exit();
+    }
 
     k64_print("\n\nCPU EXCEPTION 64\n");
 

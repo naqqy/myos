@@ -5,6 +5,7 @@
 #include "../mm/kmem64.h"
 #include "../console/font8x8.h"
 #include "../arch/x86_64/timer64.h"
+#include "../proc/process64.h"
 
 #define GUI64_FONT_W 8
 #define GUI64_FONT_H 16
@@ -140,6 +141,32 @@ static nq_u32 gui64_rgb(nq_u8 r, nq_u8 g, nq_u8 b) {
     return gui64_xrgb(r, g, b);
 }
 
+static nq_u8 gui64_lerp_u8(nq_u8 a, nq_u8 b, nq_u32 t, nq_u32 max_t) {
+    if (max_t == 0) {
+        return a;
+    }
+
+    return (nq_u8)(((nq_u32)a * (max_t - t) + (nq_u32)b * t) / max_t);
+}
+
+static nq_u32 gui64_aero_mix(
+    nq_u8 r0,
+    nq_u8 g0,
+    nq_u8 b0,
+    nq_u8 r1,
+    nq_u8 g1,
+    nq_u8 b1,
+    nq_u32 t,
+    nq_u32 max_t
+) {
+    return gui64_rgb(
+        gui64_lerp_u8(r0, r1, t, max_t),
+        gui64_lerp_u8(g0, g1, t, max_t),
+        gui64_lerp_u8(b0, b1, t, max_t)
+    );
+}
+
+
 static gui64_rect_t gui64_rect_make(int x, int y, int w, int h) {
     gui64_rect_t r;
 
@@ -231,13 +258,15 @@ static gui64_rect_t gui64_window_outer_rect(gui64_window_t* win) {
     }
 
     /*
-     * Include the active focus border and shadow area.
+     * Include the active focus glow (drawn out to x-3/y-3) and the drop
+     * shadow (drawn out to x+w+7/y+h+7). If this rect is smaller than what
+     * gui64_draw_window() paints, stale glow/shadow pixels are left behind.
      */
     return gui64_rect_make(
-        win->x - 1,
-        win->y - 1,
-        win->w + 7,
-        win->h + 7
+        win->x - 3,
+        win->y - 3,
+        win->w + 10,
+        win->h + 10
     );
 }
 
@@ -847,34 +876,46 @@ static void gui64_draw_desktop(void) {
     nq_u32 width = g_gui64_framebuffer_w;
     nq_u32 height = g_gui64_framebuffer_h;
 
-    for (nq_u32 y = 0; y < height; y++) {
-        nq_u8 r = 8;
-        nq_u8 g = (nq_u8)(28 + ((y * 36u) / (height ? height : 1)));
-        nq_u8 b = (nq_u8)(55 + ((y * 80u) / (height ? height : 1)));
-
-        gui64_fill_rect_target(0, (int)y, (int)width, 1, gui64_rgb(r, g, b));
+    if (width == 0 || height == 0) {
+        return;
     }
 
-    if (height > 160) {
-        gui64_draw_rect(
-            0,
-            (int)(height / 2),
-            (int)width,
-            3,
-            gui64_rgb(40, 120, 160)
-        );
-    }
+    /*
+     * Muted solid green desktop.
+     *
+     * Darker and less neon than the previous 186,229,174 color.
+     * The desktop stays simple; the Aero feeling comes from the glassy
+     * window chrome and taskbar.
+     */
+    gui64_fill_rect_target(
+        0,
+        0,
+        (int)width,
+        (int)height,
+        gui64_rgb(134, 181, 122)
+    );
 
-    gui64_draw_label(18, 18, "NAQ OS");
+    /*
+     * Very subtle low-contrast desktop label.
+     */
+    gui64_draw_text(18, 18, "NAQ OS", gui64_rgb(65, 111, 68));
 }
+
+
 
 static void gui64_draw_taskbar(void) {
     int w = (int)g_gui64_framebuffer_w;
     int h = (int)g_gui64_framebuffer_h;
     int y = h - GUI64_TASKBAR_H;
 
-    gui64_draw_rect(0, y, w, GUI64_TASKBAR_H, gui64_rgb(12, 28, 45));
-    gui64_draw_rect(0, y, w, 1, gui64_rgb(90, 180, 220));
+    /*
+     * Slightly darker glossy aqua taskbar.
+     */
+    gui64_draw_rect(0, y, w, GUI64_TASKBAR_H, gui64_rgb(28, 134, 162));
+    gui64_draw_rect(0, y + 1, w, 8, gui64_rgb(149, 231, 239));
+    gui64_draw_rect(0, y + 9, w, 1, gui64_rgb(245, 255, 255));
+    gui64_draw_rect(0, y + 10, w, GUI64_TASKBAR_H - 10, gui64_rgb(35, 157, 181));
+    gui64_draw_rect(0, y + GUI64_TASKBAR_H - 2, w, 2, gui64_rgb(16, 91, 125));
 
     gui64_draw_button(8, y + 6, 58, 22, "NAQ", 0);
 
@@ -905,9 +946,10 @@ static void gui64_draw_taskbar(void) {
         }
     }
 
-    gui64_draw_panel(w - 120, y + 6, 110, 22, gui64_rgb(20, 70, 95));
-    gui64_draw_text(w - 110, y + 9, "GUI", gui64_rgb(220, 245, 255));
+    gui64_draw_panel(w - 120, y + 6, 110, 22, gui64_rgb(70, 183, 200));
+    gui64_draw_text(w - 110, y + 9, "AERO", gui64_rgb(255, 255, 255));
 }
+
 
 static void gui64_draw_window(gui64_window_t* win) {
     if (!win || !win->used) {
@@ -949,21 +991,85 @@ static void gui64_draw_window(gui64_window_t* win) {
         return;
     }
 
-    nq_u32 shadow = gui64_rgb(4, 8, 14);
-    nq_u32 frame = win->active ? gui64_rgb(120, 220, 255) : gui64_rgb(75, 130, 160);
-    nq_u32 title = win->active ? gui64_rgb(30, 120, 170) : gui64_rgb(25, 70, 95);
-    nq_u32 title_hi = win->active ? gui64_rgb(95, 210, 245) : gui64_rgb(70, 140, 170);
-    nq_u32 content_border = gui64_rgb(12, 35, 55);
+    /*
+     * Stronger Aero glass chrome:
+     * pale outer rim, aqua inner rim, white highlight, teal depth.
+     */
+    nq_u32 shadow = gui64_rgb(38, 83, 78);
+    nq_u32 shadow_soft = gui64_rgb(72, 133, 121);
 
-    gui64_draw_rect(x + 5, y + 5, w, h, shadow);
+    nq_u32 outer_glass = win->active ? gui64_rgb(235, 255, 249) : gui64_rgb(174, 226, 220);
+    nq_u32 inner_glass = win->active ? gui64_rgb(113, 218, 224) : gui64_rgb(93, 169, 180);
+    nq_u32 rim_dark = win->active ? gui64_rgb(31, 132, 151) : gui64_rgb(48, 111, 124);
+    nq_u32 content_border = win->active ? gui64_rgb(232, 255, 250) : gui64_rgb(197, 235, 229);
 
-    gui64_draw_rect(x, y, w, h, frame);
-    gui64_draw_rect(x + 2, y + 2, w - 4, h - 4, content_border);
+    nq_u32 title_top = win->active ? gui64_rgb(255, 255, 255) : gui64_rgb(220, 245, 241);
+    nq_u32 title_mid = win->active ? gui64_rgb(119, 226, 235) : gui64_rgb(104, 181, 192);
+    nq_u32 title_bot = win->active ? gui64_rgb(32, 151, 192) : gui64_rgb(56, 119, 150);
 
-    gui64_draw_rect(x + 3, y + 3, w - 6, GUI64_TITLE_H, title);
-    gui64_draw_rect(x + 3, y + 3, w - 6, 2, title_hi);
+    gui64_draw_rect(x + 7, y + 7, w, h, shadow);
+    gui64_draw_rect(x + 5, y + 5, w, h, shadow_soft);
 
-    gui64_draw_text(x + 12, y + 7, win->title, gui64_rgb(230, 250, 255));
+    /*
+     * Outer glass frame.
+     */
+    gui64_draw_rect(x, y, w, h, outer_glass);
+    gui64_draw_rect(x + 1, y + 1, w - 2, h - 2, gui64_rgb(255, 255, 255));
+    gui64_draw_rect(x + 2, y + 2, w - 4, h - 4, inner_glass);
+    gui64_draw_rect(x + 3, y + 3, w - 6, h - 6, content_border);
+
+    /*
+     * Dark lower/right edge gives the glass border depth instead of the old
+     * flat blue frame look.
+     */
+    gui64_draw_rect(x + 2, y + h - 3, w - 4, 1, rim_dark);
+    gui64_draw_rect(x + w - 3, y + 2, 1, h - 4, rim_dark);
+
+    /*
+     * Glossy titlebar.
+     */
+    for (int yy = 0; yy < GUI64_TITLE_H; yy++) {
+        nq_u32 color;
+
+        if (yy < GUI64_TITLE_H / 2) {
+            color = gui64_aero_mix(
+                (nq_u8)((title_top >> 16) & 0xFFu),
+                (nq_u8)((title_top >> 8) & 0xFFu),
+                (nq_u8)(title_top & 0xFFu),
+                (nq_u8)((title_mid >> 16) & 0xFFu),
+                (nq_u8)((title_mid >> 8) & 0xFFu),
+                (nq_u8)(title_mid & 0xFFu),
+                (nq_u32)yy,
+                (nq_u32)(GUI64_TITLE_H / 2)
+            );
+        } else {
+            color = gui64_aero_mix(
+                (nq_u8)((title_mid >> 16) & 0xFFu),
+                (nq_u8)((title_mid >> 8) & 0xFFu),
+                (nq_u8)(title_mid & 0xFFu),
+                (nq_u8)((title_bot >> 16) & 0xFFu),
+                (nq_u8)((title_bot >> 8) & 0xFFu),
+                (nq_u8)(title_bot & 0xFFu),
+                (nq_u32)(yy - GUI64_TITLE_H / 2),
+                (nq_u32)(GUI64_TITLE_H - GUI64_TITLE_H / 2)
+            );
+        }
+
+        gui64_draw_rect(x + 4, y + 4 + yy, w - 8, 1, color);
+    }
+
+    /*
+     * Glass glare streaks.
+     */
+    gui64_draw_rect(x + 6, y + 6, w - 12, 2, gui64_rgb(255, 255, 255));
+    gui64_draw_rect(x + 7, y + 9, w - 14, 1, gui64_rgb(220, 255, 252));
+    gui64_draw_rect(x + 10, y + 12, w / 2, 1, gui64_rgb(192, 255, 246));
+
+    /*
+     * Title text with subtle dark shadow.
+     */
+    gui64_draw_text(x + 13, y + 8, win->title, gui64_rgb(22, 91, 112));
+    gui64_draw_text(x + 12, y + 7, win->title, gui64_rgb(255, 255, 255));
 
     gui64_draw_rect(
         x + GUI64_FRAME_PAD_X,
@@ -971,6 +1077,24 @@ static void gui64_draw_window(gui64_window_t* win) {
         w - GUI64_FRAME_PAD_X * 2,
         h - GUI64_CONTENT_Y - GUI64_CONTENT_BOTTOM_PAD,
         win->bg_color
+    );
+
+    /*
+     * Thin inner content bevel.
+     */
+    gui64_draw_rect(
+        x + GUI64_FRAME_PAD_X,
+        y + GUI64_CONTENT_Y,
+        w - GUI64_FRAME_PAD_X * 2,
+        1,
+        gui64_rgb(255, 255, 255)
+    );
+    gui64_draw_rect(
+        x + GUI64_FRAME_PAD_X,
+        y + h - GUI64_CONTENT_BOTTOM_PAD - 1,
+        w - GUI64_FRAME_PAD_X * 2,
+        1,
+        gui64_rgb(95, 172, 170)
     );
 
     if (win->kind == GUI64_WINDOW_TERMINAL && win->terminal) {
@@ -1000,10 +1124,10 @@ static void gui64_draw_window(gui64_window_t* win) {
             x + 16,
             y + 66,
             "widgets: labels panels buttons",
-            gui64_rgb(160, 220, 240)
+            gui64_rgb(255, 255, 255)
         );
 
-        gui64_draw_panel(x + 16, y + 92, w - 32, 42, gui64_rgb(10, 36, 56));
+        gui64_draw_panel(x + 16, y + 92, w - 32, 42, gui64_rgb(90, 205, 221));
         gui64_draw_button(x + 28, y + 103, 82, 22, "Button", 0);
         gui64_draw_button(x + 120, y + 103, 82, 22, "Pressed", 1);
     }
@@ -1015,11 +1139,17 @@ static void gui64_draw_window(gui64_window_t* win) {
     gui64_draw_button(bx, by, 14, 14, "X", 0);
 
     if (win->active) {
-        gui64_draw_border(x - 1, y - 1, w + 2, h + 2, gui64_rgb(190, 245, 255));
+        /*
+         * Bright glass focus glow.
+         */
+        gui64_draw_border(x - 1, y - 1, w + 2, h + 2, gui64_rgb(255, 255, 255));
+        gui64_draw_border(x - 2, y - 2, w + 4, h + 4, gui64_rgb(139, 247, 223));
+        gui64_draw_border(x - 3, y - 3, w + 6, h + 6, gui64_rgb(75, 173, 160));
     }
 
     win->chrome_drawn = 1;
 }
+
 
 static void gui64_request_window_outer_damage(gui64_window_t* win) {
     if (!win || !win->used) {
@@ -1027,14 +1157,11 @@ static void gui64_request_window_outer_damage(gui64_window_t* win) {
     }
 
     /*
-     * Include focus border and shadow.
+     * Include focus glow and shadow.
      */
-    gui64_request_damage(
-        win->x - 1,
-        win->y - 1,
-        win->w + 7,
-        win->h + 7
-    );
+    gui64_rect_t outer = gui64_window_outer_rect(win);
+
+    gui64_request_damage(outer.x, outer.y, outer.w, outer.h);
 }
 
 static void gui64_request_window_content_damage(gui64_window_t* win) {
@@ -1191,14 +1318,23 @@ static void gui64_composite_rect(gui64_rect_t damage, int flush_to_screen) {
         return;
     }
 
+    /*
+     * The compositor touches global GUI state and the screen backbuffer.
+     * Do not let timer preemption switch to another app/syscall in the
+     * middle of rebuilding a damaged region.
+     */
+    process64_preempt_disable();
+
     if (g_gui64_is_rendering) {
         g_gui64_repaint_requested = 1;
         g_gui64_damage = gui64_rect_union(g_gui64_damage, damage);
         g_gui64_damage_valid = 1;
+        process64_preempt_enable();
         return;
     }
 
     if (!gui64_compositor_ensure_framebuffer()) {
+        process64_preempt_enable();
         return;
     }
 
@@ -1237,7 +1373,10 @@ static void gui64_composite_rect(gui64_rect_t damage, int flush_to_screen) {
     }
 
     g_gui64_is_rendering = 0;
+
+    process64_preempt_enable();
 }
+
 
 static int gui64_can_flush_repaint_now(void) {
     nq_u64 now = timer64_get_ticks();
@@ -1418,19 +1557,70 @@ void gui64_next_window(void) {
     }
 
     /*
-     * Cycle focus to the window immediately below the current top.
-     * Moving it to front creates normal Alt-Tab style cycling.
+     * Real cycle behavior:
+     *
+     * g_gui64_z_order is bottom -> top, and the top window is the last item.
+     *
+     * The old code picked z_count - 2, then gui64_set_active_window() moved
+     * that window back to the front. That creates a two-window toggle:
+     *
+     *   A B C [D] -> pick C -> A B D [C] -> pick D -> A B C [D]
+     *
+     * To cycle through every window, rotate the current front/top window to
+     * the bottom, then make the new top active without calling
+     * gui64_set_active_window(), because that would reorder it again.
      */
-    int next_id = g_gui64_z_order[g_gui64_z_count - 2];
+    int old_front = g_gui64_z_order[g_gui64_z_count - 1];
 
-    if (next_id != 0) {
-        gui64_set_active_window(next_id);
+    for (int i = g_gui64_z_count - 1; i > 0; i--) {
+        g_gui64_z_order[i] = g_gui64_z_order[i - 1];
     }
+
+    g_gui64_z_order[0] = old_front;
+
+    int next_id = g_gui64_z_order[g_gui64_z_count - 1];
+    gui64_window_t* focused = 0;
+    int found = 0;
+
+    for (int i = 0; i < GUI64_MAX_WINDOWS; i++) {
+        gui64_window_t* win = &g_gui64_windows[i];
+
+        if (!win->used) {
+            continue;
+        }
+
+        win->chrome_drawn = 0;
+
+        if (win->id == next_id) {
+            win->active = 1;
+            focused = win;
+            found = 1;
+        } else {
+            win->active = 0;
+        }
+    }
+
+    if (!found) {
+        g_gui64_active_id = 0;
+        gui64_request_repaint();
+
+        if (g_gui64_active) {
+            gui64_render();
+        }
+
+        return;
+    }
+
+    g_gui64_active_id = next_id;
+    gui64_push_focus_event(focused);
+
+    gui64_request_repaint();
 
     if (g_gui64_active) {
         gui64_render();
     }
 }
+
 
 /* -------------------------------------------------------------------------- */
 /* Terminal windows                                                            */
@@ -1765,6 +1955,12 @@ int gui64_present_window(
     }
 
     /*
+     * App presents update shared kernel window buffers and damage state.
+     * Protect this path too. If called from syscall64, this nests safely.
+     */
+    process64_preempt_disable();
+
+    /*
      * Application presents update only the window surface.
      * They never touch the real framebuffer directly.
      */
@@ -1794,8 +1990,11 @@ int gui64_present_window(
 
     gui64_window_clear_dirty(win);
 
+    process64_preempt_enable();
+
     return 1;
 }
+
 
 
 int gui64_set_window_title(int id, int requester_pid, const char* title) {
@@ -1892,6 +2091,44 @@ void gui64_destroy_windows_for_pid(int owner_pid) {
     }
 
     gui64_request_repaint();
+}
+
+int gui64_pid_has_window(int pid) {
+    if (pid <= 0) {
+        return 0;
+    }
+
+    for (int i = 0; i < GUI64_MAX_WINDOWS; i++) {
+        if (g_gui64_windows[i].used && g_gui64_windows[i].owner_pid == pid) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+int gui64_focus_pid_window(int pid) {
+    if (pid <= 0) {
+        return 0;
+    }
+
+    for (int i = 0; i < GUI64_MAX_WINDOWS; i++) {
+        gui64_window_t* win = &g_gui64_windows[i];
+
+        if (!win->used || win->owner_pid != pid) {
+            continue;
+        }
+
+        gui64_set_active_window(win->id);
+
+        if (g_gui64_active) {
+            gui64_render();
+        }
+
+        return 1;
+    }
+
+    return 0;
 }
 
 int gui64_window_belongs_to(int id, int pid) {

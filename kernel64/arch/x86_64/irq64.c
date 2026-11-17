@@ -146,6 +146,39 @@ static void keyboard_handle_scancode(nq_u8 scancode) {
     kinput64_push_char(c);
 }
 
+#define PS2_DATA_PORT   0x60
+#define PS2_STATUS_PORT 0x64
+#define PS2_STATUS_OUTPUT_FULL 0x01
+#define PS2_STATUS_AUX_DATA    0x20
+
+/*
+ * Reads every byte waiting in the PS/2 controller.
+ *
+ * The controller raises IRQ1 once per byte and will not raise it again until
+ * that byte has been read. If a byte arrives while the IRQ cannot be
+ * delivered (the key released after the UEFI loader's "press any key", while
+ * the kernel is still starting and the PIC is being re-initialised), the
+ * interrupt is lost, the byte stays in the buffer and the keyboard is dead
+ * for the rest of the session. Reading the buffer re-arms it.
+ *
+ * Must be called with interrupts disabled.
+ */
+static void keyboard_drain(int handle_scancodes) {
+    for (int i = 0; i < 32; i++) {
+        nq_u8 status = inb(PS2_STATUS_PORT);
+
+        if (!(status & PS2_STATUS_OUTPUT_FULL)) {
+            break;
+        }
+
+        nq_u8 data = inb(PS2_DATA_PORT);
+
+        if (handle_scancodes && !(status & PS2_STATUS_AUX_DATA)) {
+            keyboard_handle_scancode(data);
+        }
+    }
+}
+
 void irq_handler64(irq_frame64_t* frame) {
     if (!frame) {
         return;
@@ -156,6 +189,15 @@ void irq_handler64(irq_frame64_t* frame) {
     if (irq == 0) {
         timer64_on_irq();
 
+        /*
+         * Safety net: if a keyboard interrupt was ever missed, pick the
+         * byte up here so input can never stay stuck. Cheap enough to do
+         * a few times per second.
+         */
+        if ((timer64_get_ticks() & 0x3Full) == 0) {
+            keyboard_drain(1);
+        }
+
         pic_send_eoi((nq_u8)irq);
 
         /*
@@ -165,8 +207,12 @@ void irq_handler64(irq_frame64_t* frame) {
         process64_on_timer_tick();
         return;
     } else if (irq == 1) {
-        nq_u8 scancode = inb(0x60);
-        keyboard_handle_scancode(scancode);
+        /*
+         * Only read when the controller really has a byte; the timer safety
+         * net may already have taken it, and a blind read would repeat the
+         * previous scancode.
+         */
+        keyboard_drain(1);
     }
 
     pic_send_eoi((nq_u8)irq);
@@ -184,6 +230,14 @@ void irq64_init(nq_u32 timer_hz) {
 
     pic_unmask_irq(0);
     pic_unmask_irq(1);
+
+    /*
+     * Throw away anything the firmware left in the keyboard controller
+     * (typically the release of the key pressed at the loader prompt) so the
+     * first real keypress produces a fresh IRQ1.
+     */
+    keyboard_drain(0);
+    g_shift_down = 0;
 
     bootlog64_print("IRQ64 initialized: PIC + PIT + keyboard.\n");
 }

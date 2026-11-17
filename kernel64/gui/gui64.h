@@ -154,6 +154,8 @@ int gui64_present_window(
 );
 
 int gui64_window_belongs_to(int id, int pid);
+int gui64_pid_has_window(int pid);
+int gui64_focus_pid_window(int pid);
 
 void gui64_destroy_windows_for_pid(int owner_pid);
 

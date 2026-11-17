@@ -139,6 +139,122 @@ static void fill_framebuffer_boot_info(EFI_GRAPHICS_OUTPUT_PROTOCOL* gop) {
         (nq_u32)gop->Mode->Info->PixelFormat;
 }
 
+/*
+ * Debug/compat GOP mode picker.
+ *
+ * NAQ_TARGET_GOP_WIDTH/HEIGHT let us reproduce hardware framebuffer sizes
+ * inside QEMU. QEMU must expose enough VGA RAM too, for example:
+ *
+ *   QEMU_RAM=2G QEMU_VGAMEM_MB=64 QEMU_DISPLAY=gtk ./build.sh uefi-qemu
+ *
+ * If the exact target is unavailable, we print every GOP mode and keep the
+ * firmware default instead of guessing.
+ */
+#ifndef NAQ_TARGET_GOP_WIDTH
+#define NAQ_TARGET_GOP_WIDTH  2560u
+#endif
+
+#ifndef NAQ_TARGET_GOP_HEIGHT
+#define NAQ_TARGET_GOP_HEIGHT 1080u
+#endif
+
+#ifndef NAQ_FORCE_GOP_MODE
+#define NAQ_FORCE_GOP_MODE 1u
+#endif
+
+static int gop_pixel_format_supported(EFI_GRAPHICS_PIXEL_FORMAT fmt) {
+    return fmt == PixelRedGreenBlueReserved8BitPerColor ||
+           fmt == PixelBlueGreenRedReserved8BitPerColor;
+}
+
+static EFI_STATUS select_gop_mode(EFI_GRAPHICS_OUTPUT_PROTOCOL* gop) {
+    EFI_STATUS status;
+    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION* info = NULL;
+    UINTN info_size = 0;
+    UINT32 best_mode = 0;
+    int found_exact = 0;
+
+    if (!gop || !gop->Mode) {
+        return EFI_INVALID_PARAMETER;
+    }
+
+    Print(L"GOP modes available: %u\r\n", gop->Mode->MaxMode);
+
+    for (UINT32 mode = 0; mode < gop->Mode->MaxMode; mode++) {
+        info = NULL;
+        info_size = 0;
+
+        status = uefi_call_wrapper(
+            gop->QueryMode,
+            4,
+            gop,
+            mode,
+            &info_size,
+            &info
+        );
+
+        if (EFI_ERROR(status) || !info) {
+            Print(L"  mode %u: QueryMode failed: %r\r\n", mode, status);
+            continue;
+        }
+
+        Print(
+            L"  mode %u: %ux%u ppsl=%u fmt=%s\r\n",
+            mode,
+            info->HorizontalResolution,
+            info->VerticalResolution,
+            info->PixelsPerScanLine,
+            pixel_format_name(info->PixelFormat)
+        );
+
+        if (gop_pixel_format_supported(info->PixelFormat) &&
+            info->HorizontalResolution == NAQ_TARGET_GOP_WIDTH &&
+            info->VerticalResolution == NAQ_TARGET_GOP_HEIGHT) {
+            best_mode = mode;
+            found_exact = 1;
+        }
+    }
+
+#if NAQ_FORCE_GOP_MODE
+    if (found_exact) {
+        Print(
+            L"Selecting GOP mode %u for target %ux%u...\r\n",
+            best_mode,
+            NAQ_TARGET_GOP_WIDTH,
+            NAQ_TARGET_GOP_HEIGHT
+        );
+
+        status = uefi_call_wrapper(
+            gop->SetMode,
+            2,
+            gop,
+            best_mode
+        );
+
+        if (EFI_ERROR(status)) {
+            /*
+             * Not fatal: the firmware keeps its current mode when SetMode
+             * fails, so boot with that instead of refusing to boot at all.
+             */
+            Print(L"SetMode failed: %r; keeping firmware default.\r\n", status);
+        }
+
+        return EFI_SUCCESS;
+    }
+
+    Print(
+        L"Target GOP mode %ux%u not found; keeping firmware default.\r\n",
+        NAQ_TARGET_GOP_WIDTH,
+        NAQ_TARGET_GOP_HEIGHT
+    );
+#else
+    Print(L"NAQ_FORCE_GOP_MODE disabled; keeping firmware default.\r\n");
+#endif
+
+    return EFI_SUCCESS;
+}
+
+
 /* ============================================================
  * File loading from the boot volume
  * ============================================================ */
@@ -648,8 +764,13 @@ static EFI_STATUS exit_boot_services_with_memory_map(
  * UEFI entry point
  * ============================================================ */
 
+/*
+ * No EFIAPI here: gnu-efi's startup code (crt0 / _entry) calls efi_main()
+ * with the SysV calling convention, even when the rest of the library is
+ * built with GNU_EFI_USE_MS_ABI. Marking it EFIAPI makes ImageHandle and
+ * SystemTable arrive in the wrong registers.
+ */
 EFI_STATUS
-EFIAPI
 efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     EFI_STATUS status;
     EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = NULL;
@@ -675,9 +796,20 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         return EFI_SUCCESS;
     }
 
+    Print(L"GOP: found\r\n");
+
+    status = select_gop_mode(gop);
+
+    if (EFI_ERROR(status) || !gop->Mode || !gop->Mode->Info) {
+        Print(L"GOP mode selection failed: %r\r\n", status);
+        Print(L"Press any key to return to firmware...\r\n");
+        wait_for_key();
+        return EFI_SUCCESS;
+    }
+
     info = gop->Mode->Info;
 
-    Print(L"GOP: found\r\n");
+    Print(L"Selected GOP mode:\r\n");
     Print(
         L"Resolution: %ux%u\r\n",
         info->HorizontalResolution,

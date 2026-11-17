@@ -39,30 +39,13 @@
 #define PF_R          4
 
 /*
- * Capacity pass:
- * Keep the old fixed-address POC model, but give apps a larger fixed window
- * and a larger user stack while real per-process address spaces are pending.
- */
-#ifdef ELF64_USER_STACK_SIZE
-#undef ELF64_USER_STACK_SIZE
-#endif
-#define ELF64_USER_STACK_SIZE (256ull * 1024ull)
-
-#ifdef ELF64_MAX_IMAGE_SIZE
-#undef ELF64_MAX_IMAGE_SIZE
-#endif
-#define ELF64_MAX_IMAGE_SIZE (2ull * 1024ull * 1024ull)
-
-/*
- * POC user app area.
+ * User app virtual region.
  *
- * Because paging is still identity-mapped 2 MiB pages, choose a simple
- * fixed virtual/physical region that is not near the kernel.
- *
- * Later, this should become a real per-process user address space.
+ * The addresses are fixed so existing userapp linker scripts continue to work,
+ * but mappings are now per-process.
  */
 #define ELF64_USER_MIN_ADDR 0x02000000ull
-#define ELF64_USER_MAX_ADDR 0x06000000ull
+#define ELF64_USER_MAX_ADDR 0x10000000ull
 #define ELF64_USER_STACK_TOP ELF64_USER_MAX_ADDR
 #define ELF64_USER_STACK_BASE (ELF64_USER_STACK_TOP - ELF64_USER_STACK_SIZE)
 
@@ -127,8 +110,6 @@ typedef struct elf64_phdr {
     nq_u64 p_memsz;
     nq_u64 p_align;
 } __attribute__((packed)) elf64_phdr_t;
-
-static nq_u8 g_elf64_file_buf[ELF64_MAX_IMAGE_SIZE];
 
 #define ELF64_MAX_PATH 128
 
@@ -365,6 +346,16 @@ static int elf64_load_segments(
             return 0;
         }
 
+        if (!paging64_user_range_accessible(seg_start, seg_end - seg_start)) {
+            k64_print("elf64: mapped segment is NOT accessible after map\n");
+            k64_print("range=");
+            k64_print_hex64(seg_start);
+            k64_print("..");
+            k64_print_hex64(seg_end);
+            k64_print("\n");
+            return 0;
+        }
+
         /*
          * The task is already running on its own CR3. After mapping the
          * segment, copying to p_vaddr writes into this process's private
@@ -415,32 +406,91 @@ static int elf64_entry_is_valid(const elf64_ehdr_t* eh) {
     return 1;
 }
 
-int elf64_exec_file(const char* path) {
-    nq_u64 file_size = 0;
+#define ELF64_PATH_CANDIDATES 4u
+
+static int elf64_has_elf_extension(const char* path) {
+    nq_u64 len = 0;
+
+    while (path[len]) {
+        len++;
+    }
+
+    if (len < 4) {
+        return 0;
+    }
+
+    const char* ext = path + len - 4;
+
+    return ext[0] == '.' &&
+           (ext[1] == 'e' || ext[1] == 'E') &&
+           (ext[2] == 'l' || ext[2] == 'L') &&
+           (ext[3] == 'f' || ext[3] == 'F');
+}
+
+/*
+ * Builds the index-th path to try for an app name:
+ *   0: <path>
+ *   1: <path>.ELF          (only if it has no .elf extension)
+ *   2: /apps/<path>        (only if it is not absolute)
+ *   3: /apps/<path>.ELF    (both of the above)
+ * Returns 0 when that variant does not apply or does not fit.
+ */
+static int elf64_build_candidate(
+    const char* path,
+    nq_u32 index,
+    char* out,
+    nq_u64 out_size
+) {
+    int add_prefix = (index & 2u) != 0;
+    int add_ext = (index & 1u) != 0;
+    nq_u64 n = 0;
+
+    if (add_prefix && path[0] == '/') {
+        return 0;
+    }
+
+    if (add_ext && elf64_has_elf_extension(path)) {
+        return 0;
+    }
+
+    const char* parts[3];
+
+    parts[0] = add_prefix ? "/apps/" : "";
+    parts[1] = path;
+    parts[2] = add_ext ? ".ELF" : "";
+
+    for (nq_u32 p = 0; p < 3; p++) {
+        for (nq_u64 i = 0; parts[p][i]; i++) {
+            if (n + 1 >= out_size) {
+                return 0;
+            }
+
+            out[n++] = parts[p][i];
+        }
+    }
+
+    out[n] = 0;
+
+    return 1;
+}
+
+/*
+ * Reads the ELF file and builds the current task's user address space.
+ *
+ * Runs with the preemption guard held by the caller: the VFS, PMM and page
+ * table code used here are shared kernel state, and two apps spawned back to
+ * back would otherwise load at the same time.
+ */
+static int elf64_load_image(
+    const nq_u8* file_buf,
+    nq_u64 file_size,
+    nq_u64* out_entry,
+    nq_u64* out_stack_top
+) {
     nq_u64 image_base = 0;
     nq_u64 image_size = 0;
 
-    if (!path || !path[0]) {
-        k64_print("elf64: missing path\n");
-        return 0;
-    }
-
-    elf64_debug("elf64: loading ");
-    elf64_debug(path);
-    elf64_debug("\n");
-
-    if (!vfs64_read_file(
-            path,
-            g_elf64_file_buf,
-            ELF64_MAX_IMAGE_SIZE,
-            &file_size)) {
-        k64_print("elf64: read failed or file too large. max=");
-        k64_print_dec64(ELF64_MAX_IMAGE_SIZE);
-        k64_print(" bytes\n");
-        return 0;
-    }
-
-    const elf64_ehdr_t* eh = (const elf64_ehdr_t*)g_elf64_file_buf;
+    const elf64_ehdr_t* eh = (const elf64_ehdr_t*)file_buf;
 
     if (!elf64_validate_header(eh, file_size)) {
         return 0;
@@ -463,7 +513,7 @@ int elf64_exec_file(const char* path) {
 
     if (!elf64_load_segments(
             eh,
-            g_elf64_file_buf,
+            file_buf,
             file_size,
             &image_base,
             &image_size)) {
@@ -487,11 +537,8 @@ int elf64_exec_file(const char* path) {
     mem_zero64((void*)user_stack_base, ELF64_USER_STACK_SIZE);
 
     /*
-     * POC multi-app support:
-     *
-     * Apps are still linked to the same fixed user address range.
-     * Save this app's loaded image and stack so the scheduler can swap
-     * those fixed addresses when switching between multiple GUI apps.
+     * Track metadata for ps/debug output. Old fixed-address save/restore
+     * swapping is disabled now that each user app has its own address space.
      */
     if (!process64_user_memory_setup(
             image_base,
@@ -502,9 +549,110 @@ int elf64_exec_file(const char* path) {
         return 0;
     }
 
+    *out_entry = eh->e_entry;
+    *out_stack_top = user_stack_top;
+
+    return 1;
+}
+
+int elf64_exec_file(const char* path) {
+    nq_u64 entry = 0;
+    nq_u64 user_stack_top = 0;
+
+    if (!path || !path[0]) {
+        k64_print("elf64: missing path\n");
+        return 0;
+    }
+
+    elf64_debug("elf64: loading ");
+    elf64_debug(path);
+    elf64_debug("\n");
+
+    /*
+     * The file buffer lives on the kernel heap (direct map), not in BSS.
+     * A 16 MiB static buffer made the kernel image larger than the memory
+     * the UEFI loader reserves for it and overlapped the user virtual range
+     * at ELF64_USER_MIN_ADDR, where it disappears as soon as a process maps
+     * its own pages.
+     */
+    /*
+     * The VFS has no cheap "file size" query, so start with a small buffer
+     * and grow it. Apps are tens of KiB; asking the heap for the full
+     * ELF64_MAX_IMAGE_SIZE as one contiguous block on every launch can fail
+     * on machines with little or fragmented low memory.
+     */
+    static const nq_u64 buf_sizes[] = {
+        256ull * 1024ull,
+        1024ull * 1024ull,
+        4ull * 1024ull * 1024ull,
+        ELF64_MAX_IMAGE_SIZE
+    };
+
+    int file_read = 0;
+    int loaded = 0;
+    char candidate[ELF64_MAX_PATH];
+
+    /*
+     * Accept "run cube" as well as "run /apps/CUBE.ELF": try the path as
+     * typed, then with .ELF added, then the same two under /apps/.
+     */
+    for (nq_u32 c = 0; c < ELF64_PATH_CANDIDATES && !file_read; c++) {
+        if (!elf64_build_candidate(path, c, candidate, sizeof(candidate))) {
+            continue;
+        }
+
+        for (nq_u32 i = 0; i < sizeof(buf_sizes) / sizeof(buf_sizes[0]); i++) {
+            nq_u64 buf_size = buf_sizes[i];
+            nq_u64 file_size = 0;
+
+            nq_u8* file_buf = (nq_u8*)kmalloc64(buf_size);
+
+            if (!file_buf) {
+                k64_print("elf64: failed to allocate file buffer. size=");
+                k64_print_dec64(buf_size);
+                k64_print(" bytes\n");
+                return 0;
+            }
+
+            process64_preempt_disable();
+
+            file_read = vfs64_read_file(candidate, file_buf, buf_size, &file_size);
+
+            if (file_read) {
+                loaded = elf64_load_image(
+                    file_buf,
+                    file_size,
+                    &entry,
+                    &user_stack_top
+                );
+            }
+
+            process64_preempt_enable();
+
+            kfree64(file_buf);
+
+            if (file_read) {
+                break;
+            }
+        }
+    }
+
+    if (!file_read) {
+        k64_print("elf64: cannot read ");
+        k64_print(path);
+        k64_print(" (not found, also tried /apps/ and .ELF; or larger than ");
+        k64_print_dec64(ELF64_MAX_IMAGE_SIZE);
+        k64_print(" bytes)\n");
+        return 0;
+    }
+
+    if (!loaded) {
+        return 0;
+    }
+
     elf64_debug("elf64: entering user app\n");
     elf64_debug("entry=");
-    elf64_debug_hex(" entry=", eh->e_entry);
+    elf64_debug_hex(" entry=", entry);
     elf64_debug(" stack=");
     elf64_debug_hex(" stack=", user_stack_top);
     elf64_debug("\n");
@@ -521,7 +669,7 @@ int elf64_exec_file(const char* path) {
         elf64_debug("\n");
     }
 
-    usermode64_enter(eh->e_entry, user_stack_top);
+    usermode64_enter(entry, user_stack_top);
 
     return 1;
 }

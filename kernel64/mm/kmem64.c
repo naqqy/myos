@@ -2,6 +2,7 @@
 #include "pmm64.h"
 #include "../k64_console.h"
 #include "vmem64.h"
+#include "../proc/process64.h"
 
 #define KMEM64_ALIGN 16ull
 #define KMEM64_MIN_EXPAND_PAGES 1024ull
@@ -188,7 +189,13 @@ int kmem64_init(nq_u64 initial_pages) {
     return 1;
 }
 
-void* kmalloc64(nq_u64 size) {
+/*
+ * The heap is shared by every task. kmalloc64()/kfree64() take the kernel
+ * preemption guard so the timer cannot switch to another task while the
+ * block list is half-updated (the shell task allocates outside of any
+ * syscall guard, and apps allocate from inside syscalls).
+ */
+static void* kmalloc64_unlocked(nq_u64 size) {
     if (!g_heap_ready || size == 0) {
         return 0;
     }
@@ -226,7 +233,17 @@ void* kmalloc64(nq_u64 size) {
     }
 }
 
-void kfree64(void* ptr) {
+void* kmalloc64(nq_u64 size) {
+    process64_preempt_disable();
+
+    void* ptr = kmalloc64_unlocked(size);
+
+    process64_preempt_enable();
+
+    return ptr;
+}
+
+static void kfree64_unlocked(void* ptr) {
     if (!g_heap_ready || !ptr) {
         return;
     }
@@ -246,6 +263,14 @@ void kfree64(void* ptr) {
     }
 
     coalesce_blocks();
+}
+
+void kfree64(void* ptr) {
+    process64_preempt_disable();
+
+    kfree64_unlocked(ptr);
+
+    process64_preempt_enable();
 }
 
 nq_u64 kmem64_total_bytes(void) {

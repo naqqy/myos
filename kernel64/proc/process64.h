@@ -147,6 +147,18 @@ void process64_enable_preemption(void);
 void process64_disable_preemption(void);
 int  process64_preemption_enabled(void);
 
+/*
+ * Kernel preemption guard.
+ *
+ * This does NOT turn the scheduler off. It only prevents timer IRQ
+ * preemption while kernel/syscall/GUI critical sections are touching
+ * shared kernel buffers.
+ */
+void process64_preempt_disable(void);
+void process64_preempt_enable(void);
+int  process64_preempt_disabled(void);
+nq_u32 process64_preempt_depth(void);
+
 void process64_on_timer_tick(void);
 void process64_schedule(void);
 

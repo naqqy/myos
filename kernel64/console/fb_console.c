@@ -38,11 +38,11 @@ static void k64_draw_header(void);
 static void k64_render_text_area(void);
 
 static nq_u32 k64_bg_color(void) {
-    return fb64_make_color(0, 0, 0);
+    return fb64_make_color(9, 28, 42);
 }
 
 static nq_u32 k64_fg_color(void) {
-    return fb64_make_color(234, 234, 234);
+    return fb64_make_color(236, 255, 250);
 }
 
 static nq_u16 term64_make_cell(char c) {
@@ -647,9 +647,9 @@ void terminal64_render_into_buffer(
     /*
      * XRGB32 compositor colors: 0x00RRGGBB.
      */
-    nq_u32 bg = 0x00030A10u;
-    nq_u32 fg = 0x00DCF5FFu;
-    nq_u32 cursor = 0x0050D2FFu;
+    nq_u32 bg = 0x00091C2Au;
+    nq_u32 fg = 0x00ECFFFAu;
+    nq_u32 cursor = 0x0098FF71u;
 
     terminal64_fill_xrgb32_rect(dst, dst_width, dst_height, x, y, w, h, bg);
 
@@ -737,9 +737,9 @@ void terminal64_render_into_rect(
         cols = (int)TERM64_MAX_COLS;
     }
 
-    nq_u32 bg = fb64_make_color(3, 10, 16);
-    nq_u32 fg = fb64_make_color(220, 245, 255);
-    nq_u32 cursor = fb64_make_color(80, 210, 255);
+    nq_u32 bg = fb64_make_color(9, 28, 42);
+    nq_u32 fg = fb64_make_color(236, 255, 250);
+    nq_u32 cursor = fb64_make_color(152, 255, 113);
 
     fb64_fill_rect((nq_u32)x, (nq_u32)y, (nq_u32)w, (nq_u32)h, bg);
 

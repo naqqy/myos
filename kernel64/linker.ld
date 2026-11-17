@@ -29,3 +29,13 @@ SECTIONS
 
     __kernel64_end = .;
 }
+
+/*
+ * The UEFI loader only reserves UEFI_KERNEL64_ALLOC_PAGES (4 MiB) at the
+ * load address, and KERNEL64.BIN does not contain .bss. Anything past that
+ * is memory the firmware may have handed to something else (INITRD, boot
+ * info, stack). Keep big buffers on the kernel heap, or raise
+ * UEFI_KERNEL64_ALLOC_PAGES in uefi/bootx64.c together with this limit.
+ */
+ASSERT(__kernel64_end <= 0x00500000,
+       "kernel64 image + bss is larger than the 4 MiB the UEFI loader reserves")

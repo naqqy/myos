@@ -412,6 +412,26 @@ int paging64_map_user_page(
                 return 0;
             }
 
+            /*
+             * Keep the rest of this 2 MiB region identity-mapped for the
+             * kernel (supervisor-only 4 KiB entries). The kernel still uses
+             * identity pointers for firmware-placed data such as the INITRD
+             * and boot info; dropping the whole 2 MiB region would make
+             * those fault inside this process's syscalls if they happen to
+             * share the region. Only the pages the process maps are
+             * replaced below.
+             */
+            nq_u64 identity_base = pde & 0x000FFFFFFFE00000ull;
+            nq_u64 identity_flags =
+                (pde & 0xFFFull & ~(PAGE64_PS | PAGE64_USER)) |
+                (pde & (1ull << 63));
+
+            for (nq_u64 i = 0; i < 512; i++) {
+                pt[i] =
+                    (identity_base + i * PAGE64_SIZE_4K) |
+                    identity_flags;
+            }
+
             pd[pd_i] =
                 pt_phys |
                 PAGE64_PRESENT |
@@ -462,6 +482,58 @@ int paging64_map_user_page(
     return 1;
 }
 
+/*
+ * Returns 1 if virt already has a private 4 KiB user page in this address
+ * space (not a cloned 2 MiB identity mapping).
+ */
+static int paging64_user_page_is_mapped(nq_u64 pml4_phys, nq_u64 virt) {
+    nq_u64* pml4 = paging64_phys_table_ptr(pml4_phys);
+
+    if (!pml4) {
+        return 0;
+    }
+
+    nq_u64 pml4e = pml4[(virt >> 39) & 0x1FFull];
+
+    if (!(pml4e & PAGE64_PRESENT)) {
+        return 0;
+    }
+
+    nq_u64* pdpt = paging64_phys_table_ptr(pml4e & PAGE64_ADDR_MASK);
+
+    if (!pdpt) {
+        return 0;
+    }
+
+    nq_u64 pdpte = pdpt[(virt >> 30) & 0x1FFull];
+
+    if (!(pdpte & PAGE64_PRESENT) || (pdpte & PAGE64_PS)) {
+        return 0;
+    }
+
+    nq_u64* pd = paging64_phys_table_ptr(pdpte & PAGE64_ADDR_MASK);
+
+    if (!pd) {
+        return 0;
+    }
+
+    nq_u64 pde = pd[(virt >> 21) & 0x1FFull];
+
+    if (!(pde & PAGE64_PRESENT) || (pde & PAGE64_PS)) {
+        return 0;
+    }
+
+    nq_u64* pt = paging64_phys_table_ptr(pde & PAGE64_ADDR_MASK);
+
+    if (!pt) {
+        return 0;
+    }
+
+    nq_u64 pte = pt[(virt >> 12) & 0x1FFull];
+
+    return (pte & PAGE64_PRESENT) && (pte & PAGE64_USER);
+}
+
 int paging64_alloc_map_user_range(
     nq_u64 pml4_phys,
     nq_u64 virt,
@@ -480,6 +552,15 @@ int paging64_alloc_map_user_range(
     }
 
     for (nq_u64 va = start; va < end; va += PAGE64_SIZE_4K) {
+        /*
+         * Two ELF segments may share a page. Keep the page that is already
+         * there instead of replacing it with a fresh zeroed frame, which
+         * would wipe the first segment's data and leak its frame.
+         */
+        if (paging64_user_page_is_mapped(pml4_phys, va)) {
+            continue;
+        }
+
         nq_u64 phys = pmm64_alloc_frame();
 
         if (!phys) {

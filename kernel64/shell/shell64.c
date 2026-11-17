@@ -652,6 +652,17 @@ static void shell64_run_app(const char* path) {
         return;
     }
 
+    /*
+     * In the GUI the shell task is what repaints the desktop and routes the
+     * keyboard. Blocking here until the app exits would freeze the whole
+     * screen and all input, so inside the GUI "run" starts the app the same
+     * way "spawn" does and returns to the shell loop.
+     */
+    if (gui64_active()) {
+        shell64_spawn_app(path);
+        return;
+    }
+
     int pid = elf64_spawn_file_ex(
         path,
         PROCESS64_SPAWN_FOREGROUND
@@ -669,7 +680,29 @@ static void shell64_run_app(const char* path) {
      *
      * Input works because foreground apps can pull directly from kinput64.
      */
-    process64_wait_pid((nq_u32)pid);
+    while (process64_is_alive((nq_u32)pid)) {
+        /*
+         * The app opened a GUI window while we are in text mode. Its window
+         * is invisible here and it reads keys from window events, so waiting
+         * would leave the user with a dead screen. Hand it over to the
+         * desktop instead: switch to the GUI and go back to the shell loop.
+         */
+        if (gui64_pid_has_window(pid)) {
+            process64_foreground(0);
+            g_shell64_graphics_view_active = 1;
+            gui64_enter();
+
+            /*
+             * gui64_enter() brings the terminal to the front; the user asked
+             * to run this app, so put its window on top with focus. Tab
+             * cycles back to the terminal.
+             */
+            gui64_focus_pid_window(pid);
+            return;
+        }
+
+        process64_yield();
+    }
 
     /*
     * Only clear if this app used graphics mode.

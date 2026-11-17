@@ -389,7 +389,7 @@ toggle fullscreen later
 route keyboard input to game window
 present game frames through compositor or direct fullscreen path
 
-64 Add compositor damage tracking / z-order redraw. // HIGH PRIORITY GUI FIX TODO
+64 Add compositor damage tracking / z-order redraw. // DONE / preemption issue
 Current issues:
 window/taskbar briefly flashes when a GUI app first starts
 desktop/window flickers during app-window create/destroy
@@ -415,13 +415,22 @@ avoid full taskbar redraw on app create/destroy when possible
 defer taskbar/window-list update until first real present if needed
 optionally add small compositor backbuffer or per-window restore buffer later
 
+GUI THEME TODO:
+Frutiger Aero-inspired theme // DONE
+- muted solid green desktop background
+- glassy aqua window borders/titlebars
+- darker glossy taskbar
+- lime/aqua buttons
+- retained compositor/preemption fixes
+- retained Tab window cycling
+
 
 ============================================================
 3D GAME PATH
 Goal: build a visually appealing C game with actual models.
 ============================================================
 
-64 Add 3D software renderer app foundation. // HIGH PRIORITY TODO
+64 Add 3D software renderer app foundation. // DONE
 C math library: vec2/vec3/mat4
 perspective projection
 camera movement

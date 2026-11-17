@@ -241,6 +241,15 @@ KERNEL64_BOOTDIAG_OBJ="$BUILD_DIR/boot_diag64.o"
 KERNEL64_GUI_C="$KERNEL64_DIR/gui/gui64.c"
 KERNEL64_GUI_OBJ="$BUILD_DIR/gui64.o"
 
+KERNEL64_PCI_C="$KERNEL64_DIR/hw/pci64.c"
+KERNEL64_PCI_OBJ="$BUILD_DIR/pci64.o"
+
+KERNEL64_XHCI_C="$KERNEL64_DIR/usb/xhci64.c"
+KERNEL64_XHCI_OBJ="$BUILD_DIR/xhci64.o"
+
+KERNEL64_USBKBD_C="$KERNEL64_DIR/usb/usbkbd64.c"
+KERNEL64_USBKBD_OBJ="$BUILD_DIR/usbkbd64.o"
+
 # ------------------------------------------------------------
 # Assets / initrd / user apps
 # ------------------------------------------------------------
@@ -784,6 +793,10 @@ build_kernel64() {
 
   compile64_c "Compiling 64-bit GUI compositor" "$KERNEL64_GUI_C" "$KERNEL64_GUI_OBJ"
 
+  compile64_c "Compiling 64-bit PCI scanner" "$KERNEL64_PCI_C" "$KERNEL64_PCI_OBJ"
+  compile64_c "Compiling 64-bit xHCI probe" "$KERNEL64_XHCI_C" "$KERNEL64_XHCI_OBJ"
+  compile64_c "Compiling 64-bit USB keyboard foundation" "$KERNEL64_USBKBD_C" "$KERNEL64_USBKBD_OBJ"
+
   echo "==> Compiling 64-bit stack protector runtime"
   "$GCC" "${GCC64_FLAGS[@]}" \
     -fno-stack-protector \
@@ -831,6 +844,9 @@ build_kernel64() {
     "$KERNEL64_ELF_OBJ" \
     "$KERNEL64_SHELL_OBJ" \
     "$KERNEL64_GUI_OBJ" \
+    "$KERNEL64_PCI_OBJ" \
+    "$KERNEL64_XHCI_OBJ" \
+    "$KERNEL64_USBKBD_OBJ" \
     build/stack_chk64.o
 
   msg "Converting 64-bit kernel ELF to flat binary"
@@ -911,12 +927,14 @@ build_userapps() {
   local runtime_string="$USERAPPS_DIR/runtime/string.c"
   local runtime_time="$USERAPPS_DIR/runtime/time.c"
   local runtime_gfx="$USERAPPS_DIR/runtime/gfx.c"
+  local runtime_render3d="$USERAPPS_DIR/runtime/render3d.c"
 
   local runtime_crt0_obj="$USERAPPS_BUILD_DIR/runtime_crt0.o"
   local runtime_syscall_obj="$USERAPPS_BUILD_DIR/runtime_syscall.o"
   local runtime_string_obj="$USERAPPS_BUILD_DIR/runtime_string.o"
   local runtime_time_obj="$USERAPPS_BUILD_DIR/runtime_time.o"
   local runtime_gfx_obj="$USERAPPS_BUILD_DIR/runtime_gfx.o"
+  local runtime_render3d_obj="$USERAPPS_BUILD_DIR/runtime_render3d.o"
 
   if [[ -f "$runtime_crt0" ]]; then
     "$GCC" \
@@ -981,6 +999,20 @@ build_userapps() {
       -nostdlib \
       -c "$runtime_gfx" \
       -o "$runtime_gfx_obj"
+  fi
+
+
+  if [[ -f "$runtime_render3d" ]]; then
+    "$GCC" \
+      -m64 \
+      -I"$USERAPPS_DIR/include" \
+      -ffreestanding \
+      -fno-pie \
+      -fno-stack-protector \
+      -mno-red-zone \
+      -nostdlib \
+      -c "$runtime_render3d" \
+      -o "$runtime_render3d_obj"
   fi
 
   local found=0
@@ -1054,7 +1086,8 @@ build_userapps() {
       "$runtime_syscall_obj" \
       "$runtime_string_obj" \
       "$runtime_time_obj" \
-      "$runtime_gfx_obj"
+      "$runtime_gfx_obj" \
+      "$runtime_render3d_obj"
 
     "$OBJCOPY" --strip-debug "$out" "$out"
   done < <(find "$USERAPPS_DIR" -maxdepth 1 -type f -name '*.c' -print0)
@@ -1225,7 +1258,19 @@ build_uefi() {
 
   gnuefi_lib_dir="$(dirname "$gnuefi_crt")"
 
+  # gnu-efi 4.x builds its library with the Microsoft ABI (EFIAPI) and enters
+  # the app through _entry(). Without GNU_EFI_USE_MS_ABI our calls into the
+  # library (CopyMem, ...) pass arguments in the wrong registers and the
+  # loader hangs while copying INITRD. gnu-efi 3.x calls efi_main() with the
+  # SysV ABI instead, so only add the flag when _entry exists.
+  local gnuefi_abi_flags=()
+
+  if grep -aq "_entry" "$gnuefi_crt" 2>/dev/null; then
+    gnuefi_abi_flags=(-DGNU_EFI_USE_MS_ABI)
+  fi
+
   "$GCC" \
+    "${gnuefi_abi_flags[@]}" \
     -Iinclude \
     -I/usr/include/efi \
     -I/usr/include/efi/x86_64 \
@@ -1256,12 +1301,15 @@ build_uefi() {
     -j .text \
     -j .sdata \
     -j .data \
+    -j .rodata \
     -j .dynamic \
     -j .dynsym \
     -j .rel \
     -j .rela \
+    -j '.rel.*' \
+    -j '.rela.*' \
     -j .reloc \
-    --target=efi-app-x86_64 \
+    --output-target=efi-app-x86_64 \
     "$UEFI_SO" \
     "$UEFI_EFI"
 
@@ -1446,12 +1494,14 @@ run_qemu_uefi() {
 
   "$QEMU64" \
     -machine pc \
-    -m 1024M \
+    -m "${QEMU_RAM:-1024M}" \
     -cpu qemu64 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive if=pflash,format=raw,file="$OVMF_VARS" \
     -drive if=ide,format=raw,file="$UEFI_IMG" \
-    -vga std \
+    -vga qxl \
+    -global VGA.vgamem_mb="${QEMU_VGAMEM_MB:-64}" \
+    -display "${QEMU_DISPLAY:-gtk}",zoom-to-fit=off \
     -monitor none \
     -serial none \
     -net none \
