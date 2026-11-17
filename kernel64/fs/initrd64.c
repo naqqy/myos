@@ -227,6 +227,7 @@ int initrd64_enum_path(const char* path, initrd64_enum_cb_t cb, void* ctx) {
         }
 
         const char* name = p + prefix_len + 1;
+        nq_u64 component_len = 0;
         int nested = 0;
 
         for (nq_u64 j = 0; name[j]; j++) {
@@ -234,13 +235,70 @@ int initrd64_enum_path(const char* path, initrd64_enum_cb_t cb, void* ctx) {
                 nested = 1;
                 break;
             }
+
+            component_len++;
         }
 
-        if (nested || !name[0]) {
+        if (!name[0]) {
             continue;
         }
 
-        cb(name, g_entries[i].size, 0, ctx);
+        if (!nested) {
+            cb(name, g_entries[i].size, 0, ctx);
+            continue;
+        }
+
+        /*
+         * The file is deeper down, so its first component is a
+         * subdirectory of `path`. The INITRD has no directory records;
+         * report each subdirectory once, when its first file is seen.
+         */
+        char dir_name[INITRD64_MAX_PATH];
+        int seen = 0;
+
+        if (component_len == 0 || component_len >= sizeof(dir_name)) {
+            continue;
+        }
+
+        for (nq_u64 j = 0; j < component_len; j++) {
+            dir_name[j] = name[j];
+        }
+
+        dir_name[component_len] = 0;
+
+        for (nq_u32 earlier = 0; earlier < i && !seen; earlier++) {
+            const char* q = g_entries[earlier].path;
+            nq_u64 k2 = 0;
+
+            /*
+             * Same directory if the earlier path matches up to and
+             * including this component and its trailing slash.
+             */
+            for (k2 = 0; k2 <= prefix_len + component_len + 1; k2++) {
+                char a = q[k2];
+                char b = p[k2];
+
+                if (a >= 'a' && a <= 'z') {
+                    a = (char)(a - 'a' + 'A');
+                }
+
+                if (b >= 'a' && b <= 'z') {
+                    b = (char)(b - 'a' + 'A');
+                }
+
+                if (!a || a != b) {
+                    break;
+                }
+            }
+
+            if (k2 > prefix_len + component_len + 1) {
+                seen = 1;
+            }
+        }
+
+        if (!seen) {
+            cb(dir_name, 0, 1, ctx);
+        }
     }
 
     return 1;

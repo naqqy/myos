@@ -971,6 +971,8 @@ build_userapps() {
     "$USERAPPS_DIR/runtime/time.c"
     "$USERAPPS_DIR/runtime/gfx.c"
     "$USERAPPS_DIR/runtime/render3d.c"
+    # The kernel's bitmap font, shared with apps for gfx_text().
+    "$KERNEL64_DIR/console/font8x8.c"
   )
 
   local runtime_crt0="$USERAPPS_DIR/runtime/crt0.S"
@@ -1473,10 +1475,36 @@ run_qemu_uefi() {
     )
   fi
 
+  # Hardware virtualization makes the guest many times faster than software
+  # emulation. Use it when /dev/kvm is usable by this user; QEMU_ACCEL=tcg
+  # forces software emulation, QEMU_ACCEL=kvm insists on KVM.
+  local qemu_accel_args=(-cpu qemu64)
+  local qemu_accel="${QEMU_ACCEL:-auto}"
+
+  if [[ "$qemu_accel" == "auto" ]]; then
+    if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+      qemu_accel="kvm"
+    else
+      qemu_accel="tcg"
+
+      if [[ -e /dev/kvm ]]; then
+        echo "Note: /dev/kvm exists but this user cannot use it, so QEMU will"
+        echo "      run in slow software emulation. To enable acceleration:"
+        echo "        sudo usermod -aG kvm \$USER   (then restart WSL: wsl --shutdown)"
+      fi
+    fi
+  fi
+
+  if [[ "$qemu_accel" == "kvm" ]]; then
+    qemu_accel_args=(-accel kvm -cpu host)
+  fi
+
+  echo "QEMU acceleration: $qemu_accel"
+
   "$QEMU64" \
     -machine pc \
     -m "${QEMU_RAM:-1024M}" \
-    -cpu qemu64 \
+    "${qemu_accel_args[@]}" \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive if=pflash,format=raw,file="$OVMF_VARS" \
     -drive if=ide,format=raw,file="$UEFI_IMG" \

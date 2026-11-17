@@ -694,8 +694,30 @@ int elf64_spawn_file_ex(const char* path, nq_u32 flags) {
     mem_zero64(arg, sizeof(*arg));
     str_copy64(arg->path, path, sizeof(arg->path));
 
+    /*
+     * Name the task after the program: last path component, without the
+     * extension ("/apps/CUBE.ELF" -> "CUBE").
+     */
+    char task_name[32];
+    const char* base = path;
+
+    for (const char* p = path; *p; p++) {
+        if (*p == '/') {
+            base = p + 1;
+        }
+    }
+
+    str_copy64(task_name, base[0] ? base : "app", sizeof(task_name));
+
+    for (int i = 0; task_name[i]; i++) {
+        if (task_name[i] == '.') {
+            task_name[i] = 0;
+            break;
+        }
+    }
+
     int pid = process64_create_kernel_task_ex(
-        "elf64-app",
+        task_name,
         elf64_process_entry,
         arg,
         flags

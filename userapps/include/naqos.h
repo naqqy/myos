@@ -40,6 +40,26 @@ typedef u64 size_t;
 #define SYS64_WIN_SET_TITLE   22
 #define SYS64_WIN_GET_EVENT   23
 #define SYS64_WIN_CREATE_EX   24
+#define SYS64_READDIR         25
+#define SYS64_SPAWN           26
+
+/*
+ * Keys without an ASCII code (arrows and friends) arrive as these values in
+ * key events and from input_poll_key()/input_get_key().
+ * Ctrl+letter arrives as 1..26 (Ctrl+A = 1).
+ */
+#define NAQ_KEY_UP        0x80
+#define NAQ_KEY_DOWN      0x81
+#define NAQ_KEY_LEFT      0x82
+#define NAQ_KEY_RIGHT     0x83
+#define NAQ_KEY_PAGE_UP   0x84
+#define NAQ_KEY_PAGE_DOWN 0x85
+#define NAQ_KEY_HOME      0x86
+#define NAQ_KEY_END       0x87
+#define NAQ_KEY_DELETE    0x88
+#define NAQ_KEY_ESCAPE    27
+#define NAQ_KEY_ENTER     '\n'
+#define NAQ_KEY_BACKSPACE '\b'
 
 /*
  * File/stat API.
@@ -53,6 +73,18 @@ typedef struct naq_stat {
     u32 type;
     u32 reserved;
 } naq_stat_t;
+
+/*
+ * One directory entry from readdir().
+ * type is NAQ_STAT_TYPE_FILE or NAQ_STAT_TYPE_DIR.
+ */
+#define NAQ_DIRENT_NAME_MAX 52
+
+typedef struct naq_dirent {
+    char name[NAQ_DIRENT_NAME_MAX];
+    u32 type;
+    u64 size;
+} naq_dirent_t;
 
 /*
  * Graphics API.
@@ -254,6 +286,49 @@ int stat(const char* path, naq_stat_t* out);
 i64 read_file(const char* path, void* buf, size_t buf_size);
 
 /*
+ * Lists a directory. Fills up to max_entries entries and returns how many
+ * were written, or a negative value if the path is not a directory.
+ */
+int readdir(const char* path, naq_dirent_t* entries, u32 max_entries);
+
+/*
+ * Starts another program (an ELF file). Returns its process id, or a
+ * negative value on failure.
+ */
+int spawn(const char* path);
+
+/*
+ * Text for apps that draw into their own pixel buffer (8x16 cells).
+ * Pixels outside the buffer are clipped.
+ */
+#define GFX_FONT_W 8
+#define GFX_FONT_H 16
+
+void gfx_text(
+    u32* pixels,
+    u32 width,
+    u32 height,
+    i32 x,
+    i32 y,
+    const char* text,
+    u32 color
+);
+
+/*
+ * Like gfx_text but draws at most max_chars characters.
+ */
+void gfx_text_n(
+    u32* pixels,
+    u32 width,
+    u32 height,
+    i32 x,
+    i32 y,
+    const char* text,
+    u32 max_chars,
+    u32 color
+);
+
+/*
  * Direct graphics syscalls.
  */
 int gfx_info(naq_gfx_info_t* out);
@@ -268,6 +343,33 @@ u32 gfx_get_mode(void);
  * GUI window syscall wrappers.
  */
 int win_create(i32 x, i32 y, u32 width, u32 height, const char* title);
+
+/*
+ * flags: NAQ_WIN_FLAG_* (borderless, fullscreen, game).
+ */
+int win_create_ex(
+    i32 x,
+    i32 y,
+    u32 width,
+    u32 height,
+    const char* title,
+    u32 flags
+);
+
+/*
+ * A borderless window covering the whole screen, taskbar included. Use
+ * gfx_info() for the screen size; smaller frames are stretched to fit.
+ */
+int win_create_fullscreen(const char* title);
+
+int win_create_game_window(
+    i32 x,
+    i32 y,
+    u32 width,
+    u32 height,
+    const char* title,
+    int fullscreen
+);
 int win_destroy(int window_id);
 int win_present(int window_id, const void* pixels, u32 width, u32 height);
 int win_set_title(int window_id, const char* title);

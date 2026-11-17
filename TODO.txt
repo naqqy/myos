@@ -420,14 +420,44 @@ app API: NAQ_WIN_EVENT_MOUSE (move/press/release, content-relative) and NAQ_WIN_
 WINEVENTS.ELF demonstrates mouse and resize; 3DTEST.ELF re-renders at the new size
 hotkeys kept: Tab next window, Ctrl+Q close, Ctrl+T text mode, Esc closes the start menu
 
+Desktop polish and rough edges. // DONE
+Frutiger Aero look: sky/hills/bubbles wallpaper, rounded glass window frames, orb title buttons,
+  gel icons, glass taskbar with a start orb, rounded start menu, soft drop shadows
+resize from any edge or corner (outline, applied on release)
+console windows: a program without a window of its own gets an output window once it prints;
+  it stays open as "(ended)" after the program exits so the output can be read
+"output" button (blue orb) on app windows shows that app's text output on demand
+keys typed into an app's console window are that program's input
+re-entering the desktop keeps the previous window order
+Ctrl+letter and arrow / PgUp / PgDn / Home / End / Delete keys (Ctrl+T and Ctrl+Q hotkeys now work)
+tested: fullscreen window, forced close of an unresponsive app, Restart, Shut down, text mode and back
+
+Glossy Aero pass. // DONE
+wallpaper: saturated blue sky, sun flare, cumulus clouds, hazy skyline, river, grass and wild flowers,
+  iridescent soap bubbles, goldfish (one inside a bubble)
+mascot: a translucent blue glass figure with closed eyes in the lower right (no faces or hearts elsewhere)
+app icons are glass orbs with white pictograms (folder, cube, brick wall, warning sign, pointer)
+floating blue glass dock, glass start orb and window pills; blue glass start menu
+blue glass window frames with white title text and orb title buttons
+(an earlier pastel version with faces on everything was dropped as too childish)
+QEMU: build.sh uses KVM automatically when /dev/kvm is usable (QEMU_ACCEL=tcg|kvm to force)
+
+File manager. // DONE
+FILES.ELF: browse folders, start programs, preview text and .ni images; mouse and keyboard
+SYS_READDIR (directory listing) and SYS_SPAWN (start a program) syscalls
+INITRD now reports subdirectories, so browsing works from /
+gfx_text() for apps: the kernel font is compiled into the app runtime
+
 Desktop follow-ups. // TODO
-resize from the left/top edges; live (non-outline) resize
+live (non-outline) resize; window snapping to screen edges
+resize cursors (pointer shape does not change over edges yet)
 Alt+Tab style switcher, keyboard navigation in the start menu
-terminal windows for spawned apps (their private terminals are only reachable with view <pid>)
-right-click context menus; drag desktop icons; wallpaper image
-window snapping to screen edges
+right-click context menus; drag desktop icons; wallpaper image from a file
+file manager: copy/delete/rename (needs write syscalls), scroll wheel, drag the scrollbar thumb
+toggle fullscreen at runtime without recreating the window
 USB mouse (needs xHCI); scroll wheel
 blocking event wait for apps instead of polling every frame
+real per-app icons instead of initials
 
 GUI THEME TODO:
 Frutiger Aero-inspired theme // DONE
@@ -632,7 +662,7 @@ safe console locking across tasks // TODO
 
 86 Improve process terminal support. // PARTIAL
 private terminal cleanup/reaping // DONE (freed when the process is reaped)
-foreground process receives keyboard input
+foreground process receives keyboard input // DONE on the desktop (console windows)
 shell hotkey to reclaim foreground
 terminal scrollback controls
 terminal resize handling later

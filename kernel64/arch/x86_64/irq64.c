@@ -20,6 +20,13 @@
 #define ICW4_8086    0x01
 
 static int g_shift_down = 0;
+static int g_ctrl_down = 0;
+
+/*
+ * Set after the 0xE0 prefix byte: the next scancode is an "extended" key
+ * (arrows, right Ctrl, ...).
+ */
+static int g_extended = 0;
 
 static const char keymap[128] = {
     [0x01]=27,
@@ -117,6 +124,56 @@ static void pic_unmask_irq(nq_u8 irq) {
 }
 
 static void keyboard_handle_scancode(nq_u8 scancode) {
+    if (scancode == 0xE0) {
+        g_extended = 1;
+        return;
+    }
+
+    int extended = g_extended;
+
+    g_extended = 0;
+
+    /*
+     * Ctrl (left 0x1D, right E0 0x1D).
+     */
+    if (scancode == 0x1D) {
+        g_ctrl_down = 1;
+        return;
+    }
+
+    if (scancode == 0x9D) {
+        g_ctrl_down = 0;
+        return;
+    }
+
+    if (extended) {
+        /*
+         * Navigation keys are delivered as codes above ASCII (KINPUT64_KEY_*).
+         * Extended shifts (E0 2A / E0 AA) are "fake" shifts sent around
+         * these keys and must not change the shift state.
+         */
+        char special = 0;
+
+        switch (scancode) {
+            case 0x48: special = (char)KINPUT64_KEY_UP; break;
+            case 0x50: special = (char)KINPUT64_KEY_DOWN; break;
+            case 0x4B: special = (char)KINPUT64_KEY_LEFT; break;
+            case 0x4D: special = (char)KINPUT64_KEY_RIGHT; break;
+            case 0x49: special = (char)KINPUT64_KEY_PAGE_UP; break;
+            case 0x51: special = (char)KINPUT64_KEY_PAGE_DOWN; break;
+            case 0x47: special = (char)KINPUT64_KEY_HOME; break;
+            case 0x4F: special = (char)KINPUT64_KEY_END; break;
+            case 0x53: special = (char)KINPUT64_KEY_DELETE; break;
+            default: break;
+        }
+
+        if (special) {
+            kinput64_push_char(special);
+        }
+
+        return;
+    }
+
     if (scancode == 0x2A || scancode == 0x36) {
         g_shift_down = 1;
         return;
@@ -138,6 +195,19 @@ static void keyboard_handle_scancode(nq_u8 scancode) {
 
     if (c == 0) {
         return;
+    }
+
+    /*
+     * Ctrl+letter produces the classic control code (Ctrl+A = 1 ...
+     * Ctrl+Z = 26), which is what the desktop hotkeys Ctrl+T and Ctrl+Q
+     * look for.
+     */
+    if (g_ctrl_down) {
+        if (c >= 'a' && c <= 'z') {
+            c = (char)(c - 'a' + 1);
+        } else if (c >= 'A' && c <= 'Z') {
+            c = (char)(c - 'A' + 1);
+        }
     }
 
     /*
@@ -267,6 +337,8 @@ void irq64_init(nq_u32 timer_hz) {
      */
     keyboard_drain(0);
     g_shift_down = 0;
+    g_ctrl_down = 0;
+    g_extended = 0;
 
     bootlog64_print("IRQ64 initialized: PIC + PIT + keyboard.\n");
 }

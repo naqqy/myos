@@ -118,6 +118,19 @@ int stat(const char* path, naq_stat_t* out) {
     return (int)syscall2(SYS64_STAT, (u64)path, (u64)out);
 }
 
+int readdir(const char* path, naq_dirent_t* entries, u32 max_entries) {
+    return (int)syscall3(
+        SYS64_READDIR,
+        (u64)path,
+        (u64)entries,
+        (u64)max_entries
+    );
+}
+
+int spawn(const char* path) {
+    return (int)syscall1(SYS64_SPAWN, (u64)path);
+}
+
 i64 read_file(const char* path, void* buf, size_t buf_size) {
     naq_stat_t st;
     size_t total = 0;

@@ -67,7 +67,11 @@ int kinput64_poll_char(void) {
 
     irq_restore(flags);
 
-    return (int)c;
+    /*
+     * Unsigned, so the special keys above 127 are not returned as
+     * negative numbers.
+     */
+    return (int)(nq_u8)c;
 }
 
 char kinput64_read_char(void) {

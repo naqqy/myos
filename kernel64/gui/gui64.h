@@ -170,4 +170,11 @@ int gui64_shell_key_pop(void);
  */
 int gui64_take_text_mode_request(void);
 
+/*
+ * Called when a process with a private terminal is being cleaned up.
+ * Returns 1 if a desktop window now owns the terminal session (it stays
+ * readable until that window is closed); 0 if the caller should free it.
+ */
+int gui64_adopt_terminal(terminal64_session_t* terminal, int pid, const char* name);
+
 #endif

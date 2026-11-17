@@ -531,6 +531,7 @@ static int process64_create_kernel_task_locked(
 
     mem_copy64(task->fpu_state, g_fpu_template, sizeof(g_fpu_template));
 
+    task->created_tick = timer64_get_ticks();
     task->pid = g_next_pid++;
     task->state = PROCESS64_READY;
     task->stack_base = (nq_u64)stack;
@@ -1139,7 +1140,7 @@ static int process64_task_pop_key(process64_task_t* task) {
     task->input_head =
         (task->input_head + 1u) % PROCESS64_INPUT_QUEUE_SIZE;
 
-    return (int)c;
+    return (int)(nq_u8)c;
 }
 
 int process64_push_key_to_foreground(char c) {
@@ -1150,6 +1151,54 @@ int process64_push_key_to_foreground(char c) {
     }
 
     return process64_task_push_key(task, c);
+}
+
+int process64_push_key_to_pid(nq_u32 pid, char c) {
+    process64_task_t* task = process64_find_by_pid(pid);
+
+    if (!task || task->pid == 0 ||
+        task->state == PROCESS64_ZOMBIE) {
+        return 0;
+    }
+
+    return process64_task_push_key(task, c);
+}
+
+static void process64_fill_info(process64_task_t* task, process64_info_t* out) {
+    out->pid = task->pid;
+    out->name = task->name;
+    out->terminal = task->terminal;
+    out->owns_terminal = task->owns_terminal;
+    out->created_tick = task->created_tick;
+}
+
+int process64_task_info(nq_u32 slot, process64_info_t* out) {
+    if (slot >= PROCESS64_MAX_TASKS || !out) {
+        return 0;
+    }
+
+    process64_task_t* task = &g_tasks[slot];
+
+    if (task->state == PROCESS64_UNUSED ||
+        task->state == PROCESS64_ZOMBIE) {
+        return 0;
+    }
+
+    process64_fill_info(task, out);
+
+    return 1;
+}
+
+int process64_info_for_pid(nq_u32 pid, process64_info_t* out) {
+    process64_task_t* task = process64_find_by_pid(pid);
+
+    if (!task || !out || task->state == PROCESS64_ZOMBIE) {
+        return 0;
+    }
+
+    process64_fill_info(task, out);
+
+    return 1;
 }
 
 int process64_input_poll_key(void) {
@@ -1244,7 +1293,14 @@ static void process64_reap_task(process64_task_t* task) {
      * text console back to the kernel terminal if this one was showing.
      */
     if (task->owns_terminal && task->terminal) {
-        terminal64_destroy(task->terminal);
+        /*
+         * If a desktop window is showing this terminal, the window keeps it
+         * (so the output stays readable after the app exits) and frees it
+         * when the window is closed.
+         */
+        if (!gui64_adopt_terminal(task->terminal, (int)task->pid, task->name)) {
+            terminal64_destroy(task->terminal);
+        }
     }
 
     if (task->gfx.buffer) {

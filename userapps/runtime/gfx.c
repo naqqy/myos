@@ -267,3 +267,70 @@ int gfx_buffer_present_dirty(
 
     return ret;
 }
+
+/*
+ * 8x8 bitmap font shared with the kernel (kernel64/console/font8x8.c is
+ * compiled into the app runtime). Each font row is drawn twice, giving
+ * 8x16 cells.
+ */
+extern const unsigned char* font8x8_get(char c);
+
+void gfx_text_n(
+    u32* pixels,
+    u32 width,
+    u32 height,
+    i32 x,
+    i32 y,
+    const char* text,
+    u32 max_chars,
+    u32 color
+) {
+    if (!pixels || !text) {
+        return;
+    }
+
+    for (u32 i = 0; text[i] && i < max_chars; i++) {
+        const unsigned char* glyph = font8x8_get(text[i]);
+        i32 cx = x + (i32)(i * GFX_FONT_W);
+
+        if (!glyph || cx >= (i32)width || cx + GFX_FONT_W <= 0) {
+            continue;
+        }
+
+        for (i32 gy = 0; gy < 8; gy++) {
+            unsigned char bits = glyph[gy];
+
+            if (!bits) {
+                continue;
+            }
+
+            for (i32 half = 0; half < 2; half++) {
+                i32 py = y + gy * 2 + half;
+
+                if (py < 0 || py >= (i32)height) {
+                    continue;
+                }
+
+                for (i32 gx = 0; gx < 8; gx++) {
+                    i32 px = cx + gx;
+
+                    if ((bits & (0x80u >> gx)) && px >= 0 && px < (i32)width) {
+                        pixels[(u32)py * width + (u32)px] = color;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void gfx_text(
+    u32* pixels,
+    u32 width,
+    u32 height,
+    i32 x,
+    i32 y,
+    const char* text,
+    u32 color
+) {
+    gfx_text_n(pixels, width, height, x, y, text, 0xFFFFFFFFu, color);
+}

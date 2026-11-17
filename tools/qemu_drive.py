@@ -25,6 +25,8 @@ example (boot, pass the loader prompt, open the GUI, start an app):
     'wait:12;key:ret;wait:6;type:gui;key:ret;wait:2;type:spawn cube;key:ret;wait:4;shot:gui'
 
 Set QEMU_RAM (default 1024M) to test other memory sizes.
+Set QEMU_ACCEL=kvm to run with hardware virtualization (needs access to
+/dev/kvm); the default is software emulation, which is slower but always works.
 
 Pointer input: by default QEMU offers the guest an absolute pointer (vmmouse),
 which is what the normal QEMU window uses, and the mouse steps send absolute
@@ -51,7 +53,9 @@ SCREEN_H = int(os.environ.get("QEMU_SCREEN_H", "800"))
 cmd = [
     "qemu-system-x86_64",
     "-machine", "pc,vmport=off" if RELATIVE_MOUSE else "pc",
-    "-m", ram, "-cpu", "qemu64",
+    "-m", ram,
+] + (["-accel", "kvm", "-cpu", "host"]
+     if os.environ.get("QEMU_ACCEL") == "kvm" else ["-cpu", "qemu64"]) + [
     "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
     "-drive", "if=pflash,format=raw,file=" + work + "/vars.fd",
     "-drive", "if=ide,format=raw,file=" + work + "/uefi.img",

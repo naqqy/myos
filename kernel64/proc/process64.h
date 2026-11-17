@@ -111,6 +111,11 @@ typedef struct process64_task {
      */
     nq_u64 wake_tick;
 
+    /*
+     * Timer tick at which the task was created.
+     */
+    nq_u64 created_tick;
+
     nq_u64 stack_base;
     nq_u64 stack_size;
 
@@ -216,6 +221,26 @@ nq_u32 process64_foreground_pid(void);
 int process64_current_is_foreground(void);
 
 int process64_push_key_to_foreground(char c);
+
+/*
+ * Queues a key for one process's input (SYS_INPUT_POLL_KEY / GET_KEY).
+ */
+int process64_push_key_to_pid(nq_u32 pid, char c);
+
+/*
+ * Snapshot of one task slot for the desktop. Returns 0 for an unused slot
+ * or a task that is no longer alive.
+ */
+typedef struct process64_info {
+    nq_u32 pid;
+    const char* name;
+    terminal64_session_t* terminal;
+    int owns_terminal;
+    nq_u64 created_tick;
+} process64_info_t;
+
+int process64_task_info(nq_u32 slot, process64_info_t* out);
+int process64_info_for_pid(nq_u32 pid, process64_info_t* out);
 int process64_input_poll_key(void);
 int process64_input_get_key(void);
 

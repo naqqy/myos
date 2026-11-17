@@ -17,6 +17,8 @@
 
 #include "../../mm/kmem64.h"
 
+#include "../../exec/elf64.h"
+
 static int g_syscall64_initialized = 0;
 
 #define SYSCALL64_WRITE_CHUNK_SIZE 128u
@@ -210,6 +212,49 @@ static int syscall64_validate_read_path(const char* path) {
     }
 
     return 1;
+}
+
+#define SYSCALL64_READDIR_MAX 512u
+
+typedef struct syscall64_readdir_ctx {
+    naq_dirent_t* entries;
+    nq_u32 capacity;
+    nq_u32 count;
+} syscall64_readdir_ctx_t;
+
+static void syscall64_readdir_collect(
+    const char* name,
+    nq_u64 size,
+    int is_dir,
+    void* ctx_ptr
+) {
+    syscall64_readdir_ctx_t* ctx = (syscall64_readdir_ctx_t*)ctx_ptr;
+
+    if (!name || ctx->count >= ctx->capacity) {
+        return;
+    }
+
+    /*
+     * "." and ".." are not useful to apps; they navigate with paths.
+     */
+    if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) {
+        return;
+    }
+
+    naq_dirent_t* e = &ctx->entries[ctx->count++];
+    nq_u32 i = 0;
+
+    while (name[i] && i + 1 < NAQ_DIRENT_NAME_MAX) {
+        e->name[i] = name[i];
+        i++;
+    }
+
+    while (i < NAQ_DIRENT_NAME_MAX) {
+        e->name[i++] = 0;
+    }
+
+    e->type = is_dir ? NAQ_STAT_TYPE_DIR : NAQ_STAT_TYPE_FILE;
+    e->size = size;
 }
 
 static int syscall64_should_guard_preemption(nq_u64 num) {
@@ -978,6 +1023,109 @@ void syscall64_handler(syscall64_frame_t* frame) {
             break;
         }
 
+
+        case SYS64_READDIR: {
+            /*
+             * RDI = const char* path
+             * RSI = user naq_dirent_t array
+             * RDX = number of entries the array can hold
+             * Returns the number of entries written.
+             */
+            const char* user_path = (const char*)frame->rdi;
+            naq_dirent_t* user_entries = (naq_dirent_t*)frame->rsi;
+            nq_u64 capacity = frame->rdx;
+
+            if (!user_entries || capacity == 0) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            if (capacity > SYSCALL64_READDIR_MAX) {
+                capacity = SYSCALL64_READDIR_MAX;
+            }
+
+            if (!syscall64_copy_user_string(
+                    user_path,
+                    g_syscall64_path_buf,
+                    sizeof(g_syscall64_path_buf))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!syscall64_validate_read_path(g_syscall64_path_buf)) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            syscall64_readdir_ctx_t ctx;
+
+            ctx.capacity = (nq_u32)capacity;
+            ctx.count = 0;
+            ctx.entries =
+                (naq_dirent_t*)kmalloc64(capacity * sizeof(naq_dirent_t));
+
+            if (!ctx.entries) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!vfs64_enum_dir(
+                    g_syscall64_path_buf,
+                    syscall64_readdir_collect,
+                    &ctx)) {
+                kfree64(ctx.entries);
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            if (ctx.count > 0 &&
+                !usercopy64_copy_to_user(
+                    user_entries,
+                    ctx.entries,
+                    (nq_u64)ctx.count * sizeof(naq_dirent_t))) {
+                kfree64(ctx.entries);
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            kfree64(ctx.entries);
+            frame->rax = ctx.count;
+            break;
+        }
+
+        case SYS64_SPAWN: {
+            /*
+             * RDI = const char* path of an ELF program
+             * Returns the new process id.
+             */
+            const char* user_path = (const char*)frame->rdi;
+
+            if (!syscall64_copy_user_string(
+                    user_path,
+                    g_syscall64_path_buf,
+                    sizeof(g_syscall64_path_buf))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!syscall64_validate_read_path(g_syscall64_path_buf)) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            int pid = elf64_spawn_file_ex(
+                g_syscall64_path_buf,
+                PROCESS64_SPAWN_PRIVATE_TERMINAL
+            );
+
+            if (pid < 0) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            frame->rax = (nq_u64)pid;
+            break;
+        }
 
         default:
             k64_print("\n[user] unknown syscall: ");

@@ -11,6 +11,9 @@
  *   right button   hold to turn the square orange
  *   resize window  the app re-renders at the new size (up to MAX_W x MAX_H;
  *                  beyond that the desktop stretches the frame)
+ *   F              switch between a normal window and fullscreen
+ *   I              ignore close requests (to test that the desktop ends an
+ *                  app that does not respond); the border turns red
  *   Q or close     quit
  */
 
@@ -78,6 +81,8 @@ int main(void) {
     u32 buttons = 0;
     u32 frame = 0;
     int running = 1;
+    int fullscreen = 0;
+    int ignore_close = 0;
 
     while (running) {
         naq_win_event_t ev;
@@ -94,6 +99,32 @@ int main(void) {
                     player_y -= 5;
                 } else if (ev.key == 's' || ev.key == 'S') {
                     player_y += 5;
+                } else if (ev.key == 'i' || ev.key == 'I') {
+                    ignore_close = !ignore_close;
+                } else if (ev.key == 'f' || ev.key == 'F') {
+                    /*
+                     * A window cannot change its style, so make a new one.
+                     */
+                    win_destroy(win);
+                    fullscreen = !fullscreen;
+
+                    if (fullscreen) {
+                        naq_gfx_info_t info;
+
+                        win = win_create_fullscreen("Event Test");
+
+                        if (gfx_info(&info) == 0) {
+                            set_size(info.width, info.height);
+                        }
+                    } else {
+                        win = win_create(120, 90, START_W, START_H,
+                                         "Event Test");
+                        set_size(START_W, START_H);
+                    }
+
+                    if (win < 0) {
+                        return 1;
+                    }
                 }
             } else if (ev.type == NAQ_WIN_EVENT_MOUSE) {
                 /*
@@ -111,7 +142,9 @@ int main(void) {
             } else if (ev.type == NAQ_WIN_EVENT_RESIZE) {
                 set_size((u32)ev.w, (u32)ev.h);
             } else if (ev.type == NAQ_WIN_EVENT_CLOSE) {
-                running = 0;
+                if (!ignore_close) {
+                    running = 0;
+                }
             }
         }
 
@@ -120,7 +153,7 @@ int main(void) {
         if (player_x > (i32)g_w - 28) player_x = (i32)g_w - 28;
         if (player_y > (i32)g_h - 28) player_y = (i32)g_h - 28;
 
-        clear(0x00001428u);
+        clear(ignore_close ? 0x00601010u : 0x00001428u);
         rect(8, 8, (i32)g_w - 16, (i32)g_h - 16, 0x00003060u);
 
         rect(player_x, player_y, 20, 20,

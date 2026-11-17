@@ -30,6 +30,8 @@
 #define SYS64_WIN_SET_TITLE   22
 #define SYS64_WIN_GET_EVENT   23
 #define SYS64_WIN_CREATE_EX   24
+#define SYS64_READDIR         25
+#define SYS64_SPAWN           26
 
 #define NAQ_WIN_EVENT_NONE   0
 #define NAQ_WIN_EVENT_KEY    1
@@ -48,6 +50,17 @@ typedef struct naq_stat {
     nq_u32 type;
     nq_u32 reserved;
 } naq_stat_t;
+
+/*
+ * One directory entry returned by SYS64_READDIR.
+ */
+#define NAQ_DIRENT_NAME_MAX 52
+
+typedef struct naq_dirent {
+    char name[NAQ_DIRENT_NAME_MAX];
+    nq_u32 type;
+    nq_u64 size;
+} naq_dirent_t;
 
 #define NAQ_STAT_TYPE_UNKNOWN 0
 #define NAQ_STAT_TYPE_FILE    1
