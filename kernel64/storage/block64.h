@@ -26,6 +26,12 @@ typedef struct block64_device {
     int present;
     int read_only;
     int writes_unlocked;
+
+    /*
+     * 1 for the disk the system was started from. It is writable without
+     * "diskunlock", even in SAFE_HW mode; every other disk stays locked.
+     */
+    int boot_media;
 } block64_device_t;
 
 int block64_init(void);
@@ -49,6 +55,24 @@ void block64_print_devices(void);
  */
 int block64_usb_attach(nq_u64 sector_count);
 void block64_usb_detach(void);
+
+/*
+ * The loader's record of the volume it started from (see
+ * naq_boot_info_t.boot_volume). Call once at boot.
+ */
+void block64_set_boot_volume(nq_u64 boot_volume);
+
+/*
+ * Tells block64 the serial number of the FAT volume found on a device.
+ * If it is the boot volume, the device becomes boot media and its writes
+ * are unlocked. Returns 1 in that case.
+ */
+int block64_note_volume_serial(nq_u32 device_id, nq_u32 serial);
+
+/*
+ * 1 if a write to this device would be let through right now.
+ */
+int block64_writes_allowed(nq_u32 device_id);
 
 int block64_unlock_writes(nq_u32 device_id);
 int block64_lock_writes(nq_u32 device_id);

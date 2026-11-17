@@ -556,7 +556,19 @@ int usbmsc64_attach(xhci64_t* hc, nq_u8 slot, const usbmsc64_interface_t* intf) 
         usb64_log(", no FAT32 filesystem found\n");
     } else if (vfs64_usb_mount((nq_u32)block_id, fat_lba)) {
         g_disk.mounted = 1;
-        usb64_log(", mounted at /usb\n");
+        usb64_log(", mounted at /usb");
+
+        /*
+         * The volume serial sits at offset 67 of the FAT32 boot sector.
+         * If it is the one the loader started from, this is our own boot
+         * stick and may be written to.
+         */
+        if (read_locked(fat_lba, g_sector, 1) &&
+            block64_note_volume_serial((nq_u32)block_id, get_le32(g_sector + 67))) {
+            usb64_log(" (boot stick, writable)\n");
+        } else {
+            usb64_log(" (writes locked)\n");
+        }
     } else {
         usb64_log(", FAT32 found but not mounted\n");
     }

@@ -587,6 +587,96 @@ static EFI_STATUS allocate_kernel_stack(naq_boot_info_t* boot) {
 }
 
 /* ============================================================
+ * Boot volume identity
+ * ============================================================ */
+
+/*
+ * Reads the serial number out of the boot volume's FAT boot sector and
+ * stores it in the boot info. Failing is harmless: the kernel then simply
+ * does not know which disk it came from and keeps every disk locked.
+ */
+static void read_boot_volume_serial(EFI_HANDLE image_handle) {
+    EFI_GUID loaded_image_guid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_GUID block_io_guid = EFI_BLOCK_IO_PROTOCOL_GUID;
+
+    EFI_LOADED_IMAGE_PROTOCOL* loaded_image = NULL;
+    EFI_BLOCK_IO_PROTOCOL* block_io = NULL;
+    UINT8* sector = NULL;
+
+    g_boot_info.boot_volume = 0;
+
+    EFI_STATUS status = uefi_call_wrapper(
+        BS->HandleProtocol,
+        3,
+        image_handle,
+        &loaded_image_guid,
+        (VOID**)&loaded_image
+    );
+
+    if (EFI_ERROR(status) || !loaded_image) {
+        return;
+    }
+
+    status = uefi_call_wrapper(
+        BS->HandleProtocol,
+        3,
+        loaded_image->DeviceHandle,
+        &block_io_guid,
+        (VOID**)&block_io
+    );
+
+    if (EFI_ERROR(status) || !block_io || !block_io->Media) {
+        return;
+    }
+
+    UINTN block_size = block_io->Media->BlockSize;
+
+    if (block_size < 512u || block_size > 4096u) {
+        return;
+    }
+
+    status = uefi_call_wrapper(
+        BS->AllocatePool,
+        3,
+        EfiLoaderData,
+        block_size,
+        (VOID**)&sector
+    );
+
+    if (EFI_ERROR(status) || !sector) {
+        return;
+    }
+
+    status = uefi_call_wrapper(
+        block_io->ReadBlocks,
+        5,
+        block_io,
+        block_io->Media->MediaId,
+        (EFI_LBA)0,
+        block_size,
+        sector
+    );
+
+    /*
+     * FAT32 keeps "FAT32" at offset 82 and the serial at offset 67.
+     */
+    if (!EFI_ERROR(status) &&
+        sector[510] == 0x55 && sector[511] == 0xAA &&
+        sector[82] == 'F' && sector[83] == 'A' && sector[84] == 'T' &&
+        sector[85] == '3' && sector[86] == '2') {
+        UINT32 serial =
+            (UINT32)sector[67] |
+            ((UINT32)sector[68] << 8) |
+            ((UINT32)sector[69] << 16) |
+            ((UINT32)sector[70] << 24);
+
+        g_boot_info.boot_volume = (nq_u64)serial | (1ull << 32);
+    }
+
+    uefi_call_wrapper(BS->FreePool, 1, sector);
+}
+
+/* ============================================================
  * Display selection
  * ============================================================
  *
@@ -608,6 +698,12 @@ static EFI_STATUS allocate_kernel_stack(naq_boot_info_t* boot) {
 #define NAQ_DISPLAY_CFG_MAGIC 0x5053444Eu
 #define NAQ_MAX_OUTPUTS       8u
 #define NAQ_DISPLAY_PROMPT_MS 3000u
+
+/*
+ * Set by pressing P at the boot prompt: stop before starting the kernel
+ * so the loader's messages can be read.
+ */
+static int g_pause_before_kernel = 0;
 
 typedef struct naq_display_cfg {
     UINT32 magic;
@@ -983,12 +1079,18 @@ static EFI_STATUS choose_display(EFI_HANDLE image_handle, EFI_GRAPHICS_OUTPUT_PR
         );
     }
 
-    Print(L"Press D within 3 seconds for display settings...\r\n");
+    Print(L"Starting in 3 seconds. D = display settings, P = pause before starting,\r\n");
+    Print(L"any other key = start now.\r\n");
 
     uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
 
-    if (read_key_timeout(NAQ_DISPLAY_PROMPT_MS, &key) &&
-        (key.UnicodeChar == L'd' || key.UnicodeChar == L'D')) {
+    int got_key = read_key_timeout(NAQ_DISPLAY_PROMPT_MS, &key);
+
+    if (got_key && (key.UnicodeChar == L'p' || key.UnicodeChar == L'P')) {
+        g_pause_before_kernel = 1;
+    }
+
+    if (got_key && (key.UnicodeChar == L'd' || key.UnicodeChar == L'D')) {
         naq_display_cfg_t picked;
 
         if (display_menu(&picked)) {
@@ -1158,6 +1260,8 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     Print(L"NAQ OS UEFI Loader\r\n");
     Print(L"------------------\r\n\r\n");
 
+    read_boot_volume_serial(ImageHandle);
+
     status = choose_display(ImageHandle, &gop);
 
     if (EFI_ERROR(status) || !gop || !gop->Mode || !gop->Mode->Info) {
@@ -1232,8 +1336,12 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     Print(L"  initrd base: 0x%lx\r\n", g_boot_info.initrd_base);
     Print(L"  initrd size: %lu bytes\r\n\r\n", g_boot_info.initrd_size);
 
-    Print(L"Press any key to ExitBootServices and jump to kernel64...\r\n");
-    wait_for_key();
+    if (g_pause_before_kernel) {
+        Print(L"Paused. Press any key to start the kernel...\r\n");
+        wait_for_key();
+    } else {
+        Print(L"Starting the kernel...\r\n");
+    }
 
     status = exit_boot_services_with_memory_map(ImageHandle, &g_boot_info);
 

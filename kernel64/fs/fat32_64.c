@@ -1,3 +1,4 @@
+#include "../arch/x86_64/timer64.h"
 #include "fat32_64.h"
 
 #include "../storage/block64.h"
@@ -18,6 +19,12 @@
 
 #define FAT32_MAX_LONG_NAME 128
 #define FAT32_MAX_COMPONENT 128
+
+/*
+ * A long name is stored 13 characters per directory entry.
+ */
+#define FAT32_LFN_CHARS       13u
+#define FAT32_MAX_LFN_ENTRIES ((FAT32_MAX_COMPONENT + FAT32_LFN_CHARS - 1u) / FAT32_LFN_CHARS)
 
 typedef struct fat32_bpb {
     nq_u8  jump[3];
@@ -694,11 +701,26 @@ static int read_file_by_entry(
     return total_read == entry->file_size;
 }
 
+/*
+ * Where one 32-byte directory entry lives.
+ */
+typedef struct fat32_slot {
+    nq_u32 sector_lba;
+    nq_u32 entry_index;
+} fat32_slot_t;
+
 typedef struct fat32_entry_location {
     nq_u32 dir_cluster;
     nq_u32 sector_lba;
     nq_u32 entry_index;
     fat32_found_entry_t found;
+
+    /*
+     * The long-name entries that sit in front of the entry itself; they
+     * must go when the file is deleted.
+     */
+    nq_u32 lfn_count;
+    fat32_slot_t lfn[FAT32_MAX_LFN_ENTRIES];
 } fat32_entry_location_t;
 
 static int write_sector_fs(nq_u32 fs_lba, const void* in) {
@@ -1079,6 +1101,8 @@ static int fat32_find_entry_location(
         return 0;
     }
 
+    out->lfn_count = 0;
+
     str_clear(lfn, sizeof(lfn));
 
     while (cluster_is_valid(cluster)) {
@@ -1103,18 +1127,27 @@ static int fat32_find_entry_location(
                 if (e->name[0] == 0xE5) {
                     str_clear(lfn, sizeof(lfn));
                     have_lfn = 0;
+                    out->lfn_count = 0;
                     continue;
                 }
 
                 if (entry_is_lfn(e)) {
                     collect_lfn_entry((const fat32_lfn_entry_t*)e, lfn);
                     have_lfn = 1;
+
+                    if (out->lfn_count < FAT32_MAX_LFN_ENTRIES) {
+                        out->lfn[out->lfn_count].sector_lba = sector_lba;
+                        out->lfn[out->lfn_count].entry_index = (nq_u32)i;
+                        out->lfn_count++;
+                    }
+
                     continue;
                 }
 
                 if (entry_is_skippable(e)) {
                     str_clear(lfn, sizeof(lfn));
                     have_lfn = 0;
+                    out->lfn_count = 0;
                     continue;
                 }
 
@@ -1131,6 +1164,7 @@ static int fat32_find_entry_location(
 
                 str_clear(lfn, sizeof(lfn));
                 have_lfn = 0;
+                out->lfn_count = 0;
             }
         }
 
@@ -1140,15 +1174,17 @@ static int fat32_find_entry_location(
     return 0;
 }
 
-static int fat32_find_free_dir_entry(
-    nq_u32 dir_cluster,
-    nq_u32* out_sector_lba,
-    nq_u32* out_entry_index
-) {
-    nq_u32 cluster = dir_cluster;
-    nq_u32 prev_cluster = 0;
+static void fat32_stamp_entry(fat32_dir_entry_t* e, int created);
 
-    while (cluster_is_valid(cluster)) {
+/*
+ * Finds `count` free directory entries in a row and records where they
+ * are. The directory grows by a cluster if it has to.
+ */
+static int fat32_find_free_run(nq_u32 dir_cluster, nq_u32 count, fat32_slot_t* slots) {
+    nq_u32 cluster = dir_cluster;
+    nq_u32 run = 0;
+
+    for (nq_u32 guard = 0; guard < 4096u && cluster_is_valid(cluster); guard++) {
         nq_u32 first_lba = cluster_to_lba(cluster);
 
         for (nq_u32 s = 0; s < g_sectors_per_cluster; s++) {
@@ -1161,41 +1197,363 @@ static int fat32_find_free_dir_entry(
             fat32_dir_entry_t* entries = (fat32_dir_entry_t*)g_sector_buf;
 
             for (nq_u32 i = 0; i < 16; i++) {
-                if (entries[i].name[0] == 0x00 ||
-                    entries[i].name[0] == 0xE5) {
-                    *out_sector_lba = sector_lba;
-                    *out_entry_index = i;
+                if (entries[i].name[0] != 0x00 && entries[i].name[0] != 0xE5) {
+                    run = 0;
+                    continue;
+                }
+
+                slots[run].sector_lba = sector_lba;
+                slots[run].entry_index = i;
+                run++;
+
+                if (run == count) {
                     return 1;
                 }
             }
         }
 
-        prev_cluster = cluster;
-
         nq_u32 next = fat32_next_cluster(cluster);
 
         if (!cluster_is_valid(next)) {
-            break;
+            /*
+             * End of the directory: add a (zeroed) cluster and keep
+             * counting into it.
+             */
+            nq_u32 new_cluster = 0;
+
+            if (!fat32_alloc_cluster_chain(1, &new_cluster)) {
+                return 0;
+            }
+
+            if (!fat32_write_fat_entry(cluster, new_cluster)) {
+                fat32_free_cluster_chain(new_cluster);
+                return 0;
+            }
+
+            next = new_cluster;
         }
 
         cluster = next;
     }
 
-    nq_u32 new_cluster = 0;
+    return 0;
+}
 
-    if (!fat32_alloc_cluster_chain(1, &new_cluster)) {
+/*
+ * Names this driver will create: printable ASCII without the characters
+ * FAT forbids, not ending in a space or a dot.
+ */
+static int fat32_long_name_valid(const char* name) {
+    nq_u32 len = 0;
+
+    if (!name || !name[0] || name[0] == ' ') {
         return 0;
     }
 
-    if (!fat32_write_fat_entry(prev_cluster, new_cluster)) {
-        fat32_free_cluster_chain(new_cluster);
+    if (str_eq_ci(name, ".") || str_eq_ci(name, "..")) {
         return 0;
     }
 
-    *out_sector_lba = cluster_to_lba(new_cluster);
-    *out_entry_index = 0;
+    for (; name[len]; len++) {
+        char c = name[len];
+
+        if (c < 32 || c > 126) {
+            return 0;
+        }
+
+        switch (c) {
+            case '\\': case '/': case ':': case '*': case '?':
+            case '"': case '<': case '>': case '|':
+                return 0;
+            default:
+                break;
+        }
+    }
+
+    if (len >= FAT32_MAX_COMPONENT) {
+        return 0;
+    }
+
+    return name[len - 1] != ' ' && name[len - 1] != '.';
+}
+
+/*
+ * 1 if the name can be stored as a plain 8.3 entry with nothing lost:
+ * it fits, and has no lower-case letters (8.3 names are upper case).
+ */
+static int fat32_name_is_plain_short(const char* name, nq_u8 out[11]) {
+    if (!fat32_make_short_name_from_component(name, out)) {
+        return 0;
+    }
+
+    for (nq_u32 i = 0; name[i]; i++) {
+        if (name[i] >= 'a' && name[i] <= 'z') {
+            return 0;
+        }
+    }
 
     return 1;
+}
+
+static int fat32_short_name_in_use(nq_u32 dir_cluster, const nq_u8 short_name[11]) {
+    nq_u32 cluster = dir_cluster;
+
+    while (cluster_is_valid(cluster)) {
+        nq_u32 first_lba = cluster_to_lba(cluster);
+
+        for (nq_u32 s = 0; s < g_sectors_per_cluster; s++) {
+            if (!read_sector_fs(first_lba + s, g_sector_buf)) {
+                return 1;
+            }
+
+            fat32_dir_entry_t* entries = (fat32_dir_entry_t*)g_sector_buf;
+
+            for (nq_u32 i = 0; i < 16; i++) {
+                fat32_dir_entry_t* e = &entries[i];
+
+                if (e->name[0] == 0x00) {
+                    return 0;
+                }
+
+                if (e->name[0] == 0xE5 || entry_is_lfn(e)) {
+                    continue;
+                }
+
+                int same = 1;
+
+                for (nq_u32 n = 0; n < 11; n++) {
+                    if (e->name[n] != short_name[n]) {
+                        same = 0;
+                        break;
+                    }
+                }
+
+                if (same) {
+                    return 1;
+                }
+            }
+        }
+
+        cluster = fat32_next_cluster(cluster);
+    }
+
+    return 0;
+}
+
+/*
+ * Every long name also needs an 8.3 "alias" for old software: the first
+ * characters of the name, then ~1, ~2, ... to keep it unique, e.g.
+ * "My notes.txt" -> "MYNOTE~1.TXT".
+ */
+static void fat32_make_alias(const char* name, nq_u32 number, nq_u8 out[11]) {
+    char base[8];
+    char ext[3];
+    char tail[8];
+    nq_u32 base_len = 0;
+    nq_u32 ext_len = 0;
+    nq_u32 tail_len = 0;
+    nq_u32 len = 0;
+    nq_u32 dot = 0;
+    int have_dot = 0;
+
+    while (name[len]) {
+        len++;
+    }
+
+    for (nq_u32 i = 1; i < len; i++) {
+        if (name[i] == '.') {
+            dot = i;
+            have_dot = 1;
+        }
+    }
+
+    nq_u32 base_end = have_dot ? dot : len;
+
+    for (nq_u32 i = 0; i < base_end && base_len < sizeof(base); i++) {
+        char c = name[i];
+
+        if (c == ' ' || c == '.') {
+            continue;
+        }
+
+        base[base_len++] = fat32_is_valid_short_char(c) ? fat32_upper_char(c) : '_';
+    }
+
+    if (have_dot) {
+        for (nq_u32 i = dot + 1; i < len && ext_len < sizeof(ext); i++) {
+            char c = name[i];
+
+            if (c == ' ') {
+                continue;
+            }
+
+            ext[ext_len++] = fat32_is_valid_short_char(c) ? fat32_upper_char(c) : '_';
+        }
+    }
+
+    if (base_len == 0) {
+        base[base_len++] = '_';
+    }
+
+    /*
+     * "~" and the number, built backwards.
+     */
+    char digits[6];
+    nq_u32 digit_count = 0;
+
+    do {
+        digits[digit_count++] = (char)('0' + number % 10u);
+        number /= 10u;
+    } while (number && digit_count < sizeof(digits));
+
+    tail[tail_len++] = '~';
+
+    while (digit_count > 0) {
+        tail[tail_len++] = digits[--digit_count];
+    }
+
+    if (base_len > 8u - tail_len) {
+        base_len = 8u - tail_len;
+    }
+
+    for (nq_u32 i = 0; i < 11; i++) {
+        out[i] = ' ';
+    }
+
+    for (nq_u32 i = 0; i < base_len; i++) {
+        out[i] = (nq_u8)base[i];
+    }
+
+    for (nq_u32 i = 0; i < tail_len; i++) {
+        out[base_len + i] = (nq_u8)tail[i];
+    }
+
+    for (nq_u32 i = 0; i < ext_len; i++) {
+        out[8 + i] = (nq_u8)ext[i];
+    }
+}
+
+static int fat32_write_dir_entry_at(
+    nq_u32 sector_lba,
+    nq_u32 entry_index,
+    const fat32_dir_entry_t* entry
+);
+
+static void fat32_build_dir_entry(
+    fat32_dir_entry_t* e,
+    const nq_u8 short_name[11],
+    nq_u8 attr,
+    nq_u32 first_cluster,
+    nq_u32 file_size
+);
+
+/*
+ * Adds a new entry called `name` to a directory. A name that is not
+ * plain 8.3 gets long-name entries in front of its 8.3 alias; each of
+ * those carries 13 characters and a checksum of the alias, and they are
+ * stored last part first.
+ */
+static int fat32_create_entry(
+    nq_u32 dir_cluster,
+    const char* name,
+    nq_u8 attr,
+    nq_u32 first_cluster,
+    nq_u32 file_size
+) {
+    fat32_slot_t slots[FAT32_MAX_LFN_ENTRIES + 1u];
+    fat32_dir_entry_t entry;
+    nq_u8 short_name[11];
+    nq_u32 lfn_entries = 0;
+    nq_u32 len = 0;
+
+    while (name[len]) {
+        len++;
+    }
+
+    if (!fat32_name_is_plain_short(name, short_name)) {
+        int unique = 0;
+
+        for (nq_u32 n = 1; n < 1000u; n++) {
+            fat32_make_alias(name, n, short_name);
+
+            if (!fat32_short_name_in_use(dir_cluster, short_name)) {
+                unique = 1;
+                break;
+            }
+        }
+
+        if (!unique) {
+            return 0;
+        }
+
+        lfn_entries = (len + FAT32_LFN_CHARS - 1u) / FAT32_LFN_CHARS;
+
+        if (lfn_entries > FAT32_MAX_LFN_ENTRIES) {
+            return 0;
+        }
+    }
+
+    if (!fat32_find_free_run(dir_cluster, lfn_entries + 1u, slots)) {
+        return 0;
+    }
+
+    nq_u8 checksum = 0;
+
+    for (nq_u32 i = 0; i < 11; i++) {
+        checksum = (nq_u8)(((checksum & 1u) << 7) + (checksum >> 1) + short_name[i]);
+    }
+
+    /*
+     * Byte positions of the 13 UCS-2 characters inside a long-name entry.
+     */
+    static const nq_u8 char_offset[FAT32_LFN_CHARS] = {
+        1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30
+    };
+
+    for (nq_u32 k = lfn_entries; k >= 1u; k--) {
+        nq_u8 raw[32];
+
+        for (nq_u32 i = 0; i < 32; i++) {
+            raw[i] = 0;
+        }
+
+        raw[0] = (nq_u8)(k | (k == lfn_entries ? 0x40u : 0u));
+        raw[11] = FAT32_ATTR_LFN;
+        raw[13] = checksum;
+
+        for (nq_u32 j = 0; j < FAT32_LFN_CHARS; j++) {
+            nq_u32 pos = (k - 1u) * FAT32_LFN_CHARS + j;
+            nq_u16 ch;
+
+            if (pos < len) {
+                ch = (nq_u16)(nq_u8)name[pos];
+            } else if (pos == len) {
+                ch = 0x0000u;
+            } else {
+                ch = 0xFFFFu;
+            }
+
+            raw[char_offset[j]] = (nq_u8)ch;
+            raw[char_offset[j] + 1u] = (nq_u8)(ch >> 8);
+        }
+
+        const fat32_slot_t* slot = &slots[lfn_entries - k];
+
+        if (!fat32_write_dir_entry_at(
+                slot->sector_lba,
+                slot->entry_index,
+                (const fat32_dir_entry_t*)raw)) {
+            return 0;
+        }
+    }
+
+    fat32_build_dir_entry(&entry, short_name, attr, first_cluster, file_size);
+
+    return fat32_write_dir_entry_at(
+        slots[lfn_entries].sector_lba,
+        slots[lfn_entries].entry_index,
+        &entry
+    );
 }
 
 static int fat32_write_dir_entry_at(
@@ -1217,6 +1575,32 @@ static int fat32_write_dir_entry_at(
     return write_sector_fs(sector_lba, g_sector_buf);
 }
 
+/*
+ * Sets the entry's "last written" time (and "created", for a new entry)
+ * from the clock. FAT packs a date as years-since-1980 / month / day and
+ * a time as hour / minute / two-second units.
+ */
+static void fat32_stamp_entry(fat32_dir_entry_t* e, int created) {
+    timer64_datetime_t now;
+
+    if (!timer64_read_clock(&now) || now.year < 1980u) {
+        return;
+    }
+
+    nq_u16 date = (nq_u16)(((now.year - 1980u) << 9) | (now.month << 5) | now.day);
+    nq_u16 time = (nq_u16)((now.hour << 11) | (now.minute << 5) | (now.second / 2u));
+
+    e->write_date = date;
+    e->write_time = time;
+    e->access_date = date;
+
+    if (created) {
+        e->create_date = date;
+        e->create_time = time;
+        e->create_time_tenths = (nq_u8)((now.second & 1u) * 100u);
+    }
+}
+
 static void fat32_build_dir_entry(
     fat32_dir_entry_t* e,
     const nq_u8 short_name[11],
@@ -1233,6 +1617,8 @@ static void fat32_build_dir_entry(
     e->attr = attr;
     fat32_set_first_cluster(e, first_cluster);
     e->file_size = file_size;
+
+    fat32_stamp_entry(e, 1);
 }
 
 static int fat32_write_file_data_to_chain(
@@ -1339,6 +1725,16 @@ static int fat32_mark_entry_deleted(nq_u32 sector_lba, nq_u32 entry_index) {
     entries[entry_index].name[0] = 0xE5;
 
     return write_sector_fs(sector_lba, g_sector_buf);
+}
+
+static int fat32_delete_entry(const fat32_entry_location_t* loc) {
+    for (nq_u32 i = 0; i < loc->lfn_count; i++) {
+        if (!fat32_mark_entry_deleted(loc->lfn[i].sector_lba, loc->lfn[i].entry_index)) {
+            return 0;
+        }
+    }
+
+    return fat32_mark_entry_deleted(loc->sector_lba, loc->entry_index);
 }
 
 static int fat32_init_directory_cluster(nq_u32 cluster, nq_u32 parent_cluster) {
@@ -1676,8 +2072,8 @@ int fat32_64_write_file_path(
         return 0;
     }
 
-    if (!fat32_make_short_name_from_component(name, short_name)) {
-        k64_print("fat32: write supports new 8.3 names only for now\n");
+    if (!fat32_long_name_valid(name)) {
+        k64_print("fat32: that file name is not allowed\n");
         return 0;
     }
 
@@ -1710,39 +2106,51 @@ int fat32_64_write_file_path(
             return 0;
         }
 
-        sector_lba = existing.sector_lba;
-        entry_index = existing.entry_index;
         old_first_cluster = existing.found.first_cluster;
-    } else {
-        if (!fat32_find_free_dir_entry(
-                parent.first_cluster,
-                &sector_lba,
-                &entry_index)) {
+
+        /*
+         * The file exists: keep its entry (and so its names) and change
+         * only where the data is, how long it is and when it was written.
+         */
+        if (!read_sector_fs(existing.sector_lba, g_sector_buf)) {
             if (new_first_cluster) {
                 fat32_free_cluster_chain(new_first_cluster);
             }
 
             return 0;
         }
-    }
 
-    fat32_dir_entry_t entry;
+        fat32_dir_entry_t* slot =
+            &((fat32_dir_entry_t*)g_sector_buf)[existing.entry_index];
 
-    fat32_build_dir_entry(
-        &entry,
-        short_name,
-        FAT32_ATTR_ARCHIVE,
-        new_first_cluster,
-        (nq_u32)size
-    );
+        fat32_set_first_cluster(slot, new_first_cluster);
+        slot->file_size = (nq_u32)size;
+        slot->attr |= FAT32_ATTR_ARCHIVE;
+        fat32_stamp_entry(slot, 0);
 
-    if (!fat32_write_dir_entry_at(sector_lba, entry_index, &entry)) {
+        if (!write_sector_fs(existing.sector_lba, g_sector_buf)) {
+            if (new_first_cluster) {
+                fat32_free_cluster_chain(new_first_cluster);
+            }
+
+            return 0;
+        }
+    } else if (!fat32_create_entry(
+                   parent.first_cluster,
+                   name,
+                   FAT32_ATTR_ARCHIVE,
+                   new_first_cluster,
+                   (nq_u32)size)) {
         if (new_first_cluster) {
             fat32_free_cluster_chain(new_first_cluster);
         }
 
         return 0;
     }
+
+    (void)short_name;
+    (void)sector_lba;
+    (void)entry_index;
 
     /*
      * The directory entry now points at the new data, so the clusters of
@@ -1782,8 +2190,8 @@ int fat32_64_mkdir_path(const char* path) {
         return 0;
     }
 
-    if (!fat32_make_short_name_from_component(name, short_name)) {
-        k64_print("fat32: mkdir supports 8.3 names only for now\n");
+    if (!fat32_long_name_valid(name)) {
+        k64_print("fat32: that folder name is not allowed\n");
         return 0;
     }
 
@@ -1804,28 +2212,19 @@ int fat32_64_mkdir_path(const char* path) {
         return 0;
     }
 
-    if (!fat32_find_free_dir_entry(
+    if (!fat32_create_entry(
             parent.first_cluster,
-            &sector_lba,
-            &entry_index)) {
+            name,
+            FAT32_ATTR_DIRECTORY,
+            new_cluster,
+            0)) {
         fat32_free_cluster_chain(new_cluster);
         return 0;
     }
 
-    fat32_dir_entry_t entry;
-
-    fat32_build_dir_entry(
-        &entry,
-        short_name,
-        FAT32_ATTR_DIRECTORY,
-        new_cluster,
-        0
-    );
-
-    if (!fat32_write_dir_entry_at(sector_lba, entry_index, &entry)) {
-        fat32_free_cluster_chain(new_cluster);
-        return 0;
-    }
+    (void)short_name;
+    (void)sector_lba;
+    (void)entry_index;
 
     return 1;
 }
@@ -1861,7 +2260,7 @@ int fat32_64_rm_path(const char* path) {
         return 0;
     }
 
-    if (!fat32_mark_entry_deleted(loc.sector_lba, loc.entry_index)) {
+    if (!fat32_delete_entry(&loc)) {
         return 0;
     }
 
@@ -1911,7 +2310,7 @@ int fat32_64_rmdir_path(const char* path) {
         return 0;
     }
 
-    if (!fat32_mark_entry_deleted(loc.sector_lba, loc.entry_index)) {
+    if (!fat32_delete_entry(&loc)) {
         return 0;
     }
 

@@ -5,6 +5,7 @@
 #include "../safety/safe_mode64.h"
 #include "../debug/bootlog64.h"
 #include "../mm/kmem64.h"
+#include "../storage/block64.h"
 
 static int g_vfs_mounted = 0;
 static vfs64_backend_t g_vfs_backend = VFS64_BACKEND_NONE;
@@ -16,6 +17,7 @@ static int g_fat32_mount_available = 0;
  * 1 while a USB disk's FAT32 filesystem is mounted at /usb.
  */
 static volatile int g_usb_mounted = 0;
+static nq_u32 g_usb_block_id = 0;
 
 static int is_sep(char c) {
     return c == '/' || c == '\\';
@@ -417,6 +419,7 @@ int vfs64_usb_mount(nq_u32 block_device_id, nq_u64 base_lba) {
         return 0;
     }
 
+    g_usb_block_id = block_device_id;
     g_usb_mounted = 1;
 
     return 1;
@@ -431,6 +434,31 @@ void vfs64_usb_unmount(void) {
 
 int vfs64_usb_mounted(void) {
     return g_usb_mounted;
+}
+
+int vfs64_write_locked(const char* path) {
+    char normalized[VFS64_MAX_PATH];
+    const char* backend_path = 0;
+
+    if (!path || !vfs64_normalize_path(path, normalized, sizeof(normalized))) {
+        return 0;
+    }
+
+    if (vfs64_pick_backend_for_path(normalized, &backend_path) != VFS64_BACKEND_FAT32) {
+        return 0;
+    }
+
+    /*
+     * A stripped prefix means /usb; otherwise FAT32 is the root, on the
+     * boot block device.
+     */
+    if (backend_path != normalized) {
+        return !block64_writes_allowed(g_usb_block_id);
+    }
+
+    const block64_device_t* boot = block64_boot_device();
+
+    return !boot || !block64_writes_allowed(boot->id);
 }
 
 static int path_is_root(const char* normalized) {

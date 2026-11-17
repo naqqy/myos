@@ -68,7 +68,9 @@ void boot_diag64_print(const naq_boot_info_t* boot) {
     }
 
     k64_print("Disk writes: ");
-    k64_print(safe_mode64_disk_writes_allowed() ? "UNLOCKED" : "LOCKED");
+    k64_print(safe_mode64_disk_writes_allowed()
+        ? "UNLOCKED"
+        : "LOCKED, except the USB stick the system started from");
     k64_print("\n");
 
     k64_print("Scheduler: process64 ready, ");

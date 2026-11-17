@@ -184,7 +184,12 @@ static int shell64_parse_echo_append(
 }
 
 static int shell64_require_disk_write_unlocked(const char* command_name) {
-    if (safe_mode64_disk_writes_allowed()) {
+    /*
+     * Fine if writes are unlocked in general, or if the boot stick (always
+     * writable) is there to write to. The filesystem still checks the
+     * actual path.
+     */
+    if (safe_mode64_disk_writes_allowed() || !vfs64_write_locked("/usb")) {
         return 1;
     }
 
@@ -340,7 +345,7 @@ static void shell64_print_help(const char* page_arg) {
         k64_print("  help          - show this help\n");
         k64_print("  about         - show kernel info\n");
         k64_print("  clear / cls   - clear screen\n");
-        if (safe_mode64_disk_writes_allowed()) {
+        if (safe_mode64_disk_writes_allowed() || !vfs64_write_locked("/usb")) {
             k64_print("  mkdir <path>  - create directory\n");
             k64_print("  rm <path>     - remove file\n");
             k64_print("  rmdir <path>  - remove empty directory\n");
@@ -1049,7 +1054,7 @@ static void shell64_execute_command(void) {
         } else if (vfs64_mkdir(path)) {
             k64_print("Directory created.\n");
         } else {
-            k64_print("mkdir failed. New directories currently need 8.3 names.\n");
+            k64_print("mkdir failed.\n");
         }
     }
     else if (str_starts_with(arg, "rm ")) {

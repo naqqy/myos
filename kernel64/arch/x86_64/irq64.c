@@ -21,6 +21,7 @@
 
 static int g_shift_down = 0;
 static int g_ctrl_down = 0;
+static int g_alt_down = 0;
 
 /*
  * Set after the 0xE0 prefix byte: the next scancode is an "extended" key
@@ -146,6 +147,19 @@ static void keyboard_handle_scancode(nq_u8 scancode) {
         return;
     }
 
+    /*
+     * Alt (left 0x38, right E0 0x38).
+     */
+    if (scancode == 0x38) {
+        g_alt_down = 1;
+        return;
+    }
+
+    if (scancode == 0xB8) {
+        g_alt_down = 0;
+        return;
+    }
+
     if (extended) {
         /*
          * Navigation keys are delivered as codes above ASCII (KINPUT64_KEY_*).
@@ -188,6 +202,11 @@ static void keyboard_handle_scancode(nq_u8 scancode) {
      * Ignore key releases.
      */
     if (scancode & 0x80) {
+        return;
+    }
+
+    if (g_alt_down && scancode == 0x0F) {
+        kinput64_push_char((char)KINPUT64_KEY_ALT_TAB);
         return;
     }
 
@@ -338,6 +357,7 @@ void irq64_init(nq_u32 timer_hz) {
     keyboard_drain(0);
     g_shift_down = 0;
     g_ctrl_down = 0;
+    g_alt_down = 0;
     g_extended = 0;
 
     bootlog64_print("IRQ64 initialized: PIC + PIT + keyboard.\n");

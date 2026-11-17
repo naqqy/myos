@@ -1,3 +1,7 @@
+#include "../../safety/safe_mode64.h"
+#include "../../mm/kmem64.h"
+#include "../../mm/usercopy64.h"
+#include "../../fs/vfs64.h"
 #include "syscall64.h"
 
 #include "timer64.h"
@@ -29,6 +33,13 @@ static int g_syscall64_initialized = 0;
  * memory while the handle is open.
  */
 #define SYSCALL64_MAX_FILE_SIZE (64ull * 1024ull * 1024ull)
+
+/*
+ * Largest file an app may write in one SYS64_WRITE_FILE call.
+ */
+#define SYSCALL64_MAX_WRITE_SIZE (4ull * 1024ull * 1024ull)
+
+static char g_syscall64_arg_buf[PROCESS64_LAUNCH_ARG_SIZE];
 
 /*
  * Largest window surface an app may present. The pixels are copied straight
@@ -1124,6 +1135,165 @@ void syscall64_handler(syscall64_frame_t* frame) {
             }
 
             frame->rax = (nq_u64)pid;
+            break;
+        }
+
+        case SYS64_WRITE_FILE: {
+            /*
+             * RDI = const char* path
+             * RSI = data
+             * RDX = size in bytes
+             *
+             * Creates the file or replaces its whole contents. Returns
+             * the number of bytes written.
+             */
+            const char* user_path = (const char*)frame->rdi;
+            const void* user_data = (const void*)frame->rsi;
+            nq_u64 size = frame->rdx;
+
+            if (size > SYSCALL64_MAX_WRITE_SIZE || (size > 0 && !user_data)) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            if (!syscall64_copy_user_string(
+                    user_path,
+                    g_syscall64_path_buf,
+                    sizeof(g_syscall64_path_buf))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!syscall64_validate_read_path(g_syscall64_path_buf)) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            /*
+             * Tell "writes are locked" apart from other failures, so the
+             * app can explain how to unlock them.
+             */
+            if (vfs64_write_locked(g_syscall64_path_buf)) {
+                frame->rax = syscall64_error(SYS64_EACCES);
+                break;
+            }
+
+            void* data = kmalloc64(size ? size : 1);
+
+            if (!data) {
+                frame->rax = syscall64_error(SYS64_EIO);
+                break;
+            }
+
+            if (size > 0 && !usercopy64_copy_from_user(data, user_data, size)) {
+                kfree64(data);
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            int written = vfs64_write_file(g_syscall64_path_buf, data, size);
+
+            kfree64(data);
+
+            frame->rax = written ? size : syscall64_error(SYS64_EIO);
+            break;
+        }
+
+        case SYS64_SPAWN_ARG: {
+            /*
+             * RDI = const char* path of an ELF program
+             * RSI = const char* argument for it (see SYS64_GET_ARG)
+             * Returns the new process id.
+             */
+            const char* user_path = (const char*)frame->rdi;
+            const char* user_arg = (const char*)frame->rsi;
+
+            if (!syscall64_copy_user_string(
+                    user_path,
+                    g_syscall64_path_buf,
+                    sizeof(g_syscall64_path_buf)) ||
+                !syscall64_copy_user_string(
+                    user_arg,
+                    g_syscall64_arg_buf,
+                    sizeof(g_syscall64_arg_buf))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!syscall64_validate_read_path(g_syscall64_path_buf)) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            int pid = elf64_spawn_file_ex(
+                g_syscall64_path_buf,
+                PROCESS64_SPAWN_PRIVATE_TERMINAL
+            );
+
+            if (pid < 0) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            /*
+             * Task switching is off for the whole syscall, so the new
+             * program cannot run before its argument is in place.
+             */
+            process64_set_launch_arg((nq_u32)pid, g_syscall64_arg_buf);
+
+            frame->rax = (nq_u64)pid;
+            break;
+        }
+
+        case SYS64_GET_ARG: {
+            /*
+             * RDI = char* buffer
+             * RSI = buffer size
+             *
+             * Copies this program's launch argument (a string, possibly
+             * empty) and returns its length.
+             */
+            char* user_buf = (char*)frame->rdi;
+            nq_u64 capacity = frame->rsi;
+            const char* arg = process64_current_launch_arg();
+            nq_u64 length = 0;
+
+            while (arg[length]) {
+                length++;
+            }
+
+            if (!user_buf || capacity < length + 1u) {
+                frame->rax = syscall64_error(SYS64_EINVAL);
+                break;
+            }
+
+            if (!usercopy64_copy_to_user(user_buf, arg, length + 1u)) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            frame->rax = length;
+            break;
+        }
+
+        case SYS64_SETTING_GET: {
+            /*
+             * RDI = setting id. Returns its value.
+             */
+            int value = gui64_setting_get((int)frame->rdi);
+
+            frame->rax = value < 0 ? syscall64_error(SYS64_EINVAL) : (nq_u64)value;
+            break;
+        }
+
+        case SYS64_SETTING_SET: {
+            /*
+             * RDI = setting id, RSI = new value.
+             * Returns 1 if applied, 2 if applied and saved to the stick.
+             */
+            int result = gui64_setting_set((int)frame->rdi, (int)frame->rsi);
+
+            frame->rax = result ? (nq_u64)result : syscall64_error(SYS64_EINVAL);
             break;
         }
 

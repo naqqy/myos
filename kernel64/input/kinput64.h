@@ -17,6 +17,11 @@
 #define KINPUT64_KEY_END       0x87
 #define KINPUT64_KEY_DELETE    0x88
 
+/*
+ * Alt+Tab, for the desktop's window switcher. Not passed on to apps.
+ */
+#define KINPUT64_KEY_ALT_TAB   0x89
+
 void kinput64_init(void);
 
 void kinput64_push_char(char c);

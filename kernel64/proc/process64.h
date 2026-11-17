@@ -85,6 +85,8 @@ typedef struct process64_user_memory {
     void* stack_backup;
 } process64_user_memory_t;
 
+#define PROCESS64_LAUNCH_ARG_SIZE 128
+
 typedef void (*process64_entry_t)(void* arg);
 
 typedef enum process64_state {
@@ -137,6 +139,12 @@ typedef struct process64_task {
 
     char name[32];
 
+    /*
+     * Text handed over by whoever started this program (for example the
+     * file an editor should open). Empty if none.
+     */
+    char launch_arg[PROCESS64_LAUNCH_ARG_SIZE];
+
     char input_queue[PROCESS64_INPUT_QUEUE_SIZE];
     nq_u32 input_head;
     nq_u32 input_tail;
@@ -156,6 +164,13 @@ typedef struct process64_task {
 } process64_task_t;
 
 void process64_init(void);
+
+/*
+ * The launch argument of a program: set by the one that spawned it, read
+ * by the program itself.
+ */
+int process64_set_launch_arg(nq_u32 pid, const char* arg);
+const char* process64_current_launch_arg(void);
 
 int process64_create_kernel_task(
     const char* name,

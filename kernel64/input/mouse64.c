@@ -67,8 +67,14 @@
 static int g_mouse_available = 0;
 static int g_mouse_absolute = 0;
 
-static nq_u8 g_packet[3];
+static nq_u8 g_packet[4];
 static nq_u32 g_packet_index = 0;
+
+/*
+ * 3 for a plain mouse, 4 once the wheel has been switched on (the fourth
+ * byte is the wheel movement).
+ */
+static nq_u32 g_packet_size = 3;
 
 static volatile mouse64_event_t g_queue[MOUSE64_QUEUE_SIZE];
 static volatile nq_u32 g_queue_head = 0;
@@ -204,13 +210,16 @@ static void vmmouse_drain(void) {
             return;
         }
 
-        vmmouse_call(VMMOUSE_CMD_ABSPOINTER_DATA, 4, &flags, &x, &y, 0);
+        nq_u32 z = 0;
+
+        vmmouse_call(VMMOUSE_CMD_ABSPOINTER_DATA, 4, &flags, &x, &y, &z);
 
         mouse64_event_t ev;
 
         ev.dx = 0;
         ev.dy = 0;
         ev.buttons = 0;
+        ev.wheel = (int)(nq_s8)z;
         ev.absolute = 1;
         ev.abs_x = x & 0xFFFFu;
         ev.abs_y = y & 0xFFFFu;
@@ -301,6 +310,27 @@ static int mouse_command(nq_u8 command) {
     return 0;
 }
 
+/*
+ * Switches on the scroll wheel. A wheel mouse stays in plain 3-byte mode
+ * until it sees the sample rate set to 200, 100, 80 in a row; after that
+ * it answers "3" when asked for its ID and sends 4-byte packets.
+ */
+static int mouse_enable_wheel(void) {
+    static const nq_u8 knock[3] = { 200, 100, 80 };
+
+    for (int i = 0; i < 3; i++) {
+        if (!mouse_command(0xF3) || !mouse_command(knock[i])) {
+            return 0;
+        }
+    }
+
+    if (!mouse_command(0xF2) || !ps2_wait_can_read()) {
+        return 0;
+    }
+
+    return inb(PS2_DATA_PORT) == 3;
+}
+
 int mouse64_init(void) {
     nq_u8 config;
 
@@ -338,6 +368,8 @@ int mouse64_init(void) {
         ps2_flush_output();
         return 0;
     }
+
+    g_packet_size = mouse_enable_wheel() ? 4u : 3u;
 
     if (!mouse_command(MOUSE_CMD_ENABLE)) {
         ps2_flush_output();
@@ -381,6 +413,7 @@ static void queue_push(const mouse64_event_t* ev) {
 
         g_queue[last].dx += ev->dx;
         g_queue[last].dy += ev->dy;
+        g_queue[last].wheel += ev->wheel;
         g_queue[last].buttons = ev->buttons;
         g_queue[last].absolute = ev->absolute;
         g_queue[last].abs_x = ev->abs_x;
@@ -390,6 +423,7 @@ static void queue_push(const mouse64_event_t* ev) {
 
     g_queue[g_queue_tail].dx = ev->dx;
     g_queue[g_queue_tail].dy = ev->dy;
+    g_queue[g_queue_tail].wheel = ev->wheel;
     g_queue[g_queue_tail].buttons = ev->buttons;
     g_queue[g_queue_tail].absolute = ev->absolute;
     g_queue[g_queue_tail].abs_x = ev->abs_x;
@@ -413,7 +447,7 @@ void mouse64_handle_byte(nq_u8 data) {
 
     g_packet[g_packet_index++] = data;
 
-    if (g_packet_index < 3) {
+    if (g_packet_index < g_packet_size) {
         return;
     }
 
@@ -448,6 +482,7 @@ void mouse64_handle_byte(nq_u8 data) {
     ev.absolute = 0;
     ev.abs_x = 0;
     ev.abs_y = 0;
+    ev.wheel = (g_packet_size == 4u) ? (int)(nq_s8)g_packet[3] : 0;
 
     queue_push(&ev);
 }
@@ -487,6 +522,7 @@ int mouse64_poll(mouse64_event_t* out) {
 
     out->dx = g_queue[g_queue_head].dx;
     out->dy = g_queue[g_queue_head].dy;
+    out->wheel = g_queue[g_queue_head].wheel;
     out->buttons = g_queue[g_queue_head].buttons;
     out->absolute = g_queue[g_queue_head].absolute;
     out->abs_x = g_queue[g_queue_head].abs_x;

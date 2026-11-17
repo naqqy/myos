@@ -10,12 +10,13 @@
  *   folder      opens it
  *   .ELF        starts the program
  *   .NI         shows the image
+ *   text files  open in the Editor (.TXT .CFG .MD .LOG .INI .C .H ...)
  *   anything else is shown as text (first part of large files)
  *
  * Mouse:
  *   click a row to select it, double-click to open
  *   "Up" button goes to the parent folder (or back from a preview)
- *   scrollbar arrows and track scroll the list
+ *   scrollbar arrows and track scroll the list, as does the wheel
  *
  * Keys:
  *   Up/Down, PgUp/PgDn   move the selection / scroll a preview
@@ -433,6 +434,21 @@ static void go_up(void) {
     load_directory();
 }
 
+/*
+ * Largest file the editor accepts.
+ */
+#define EDITOR_MAX (256u * 1024u)
+
+static int is_text_file(const char* name) {
+    return has_extension(name, "TXT") || has_extension(name, "CFG") ||
+           has_extension(name, "MD")  || has_extension(name, "LOG") ||
+           has_extension(name, "INI") || has_extension(name, "C")   ||
+           has_extension(name, "H")   || has_extension(name, "S")   ||
+           has_extension(name, "ASM") || has_extension(name, "LD")  ||
+           has_extension(name, "SH")  || has_extension(name, "PY")  ||
+           has_extension(name, "OBJ");
+}
+
 static void open_entry(int index) {
     char path[PATH_MAX];
 
@@ -464,6 +480,20 @@ static void open_entry(int index) {
         }
 
         return;
+    }
+
+    /*
+     * Text files open in the editor. If it cannot be started, fall back
+     * to the built-in preview below.
+     */
+    if (is_text_file(e->name) && e->size < EDITOR_MAX) {
+        if (spawn_arg("/apps/EDIT.ELF", path) > 0) {
+            g_status[0] = 0;
+            str_append(g_status, "Opened ", sizeof(g_status));
+            str_append(g_status, e->name, sizeof(g_status));
+            str_append(g_status, " in the Editor", sizeof(g_status));
+            return;
+        }
     }
 
     /*
@@ -969,6 +999,9 @@ int main(void) {
                         (i32)(((i64)ev.x * (i64)g_w) / (i64)g_window_w),
                         (i32)(((i64)ev.y * (i64)g_h) / (i64)g_window_h)
                     );
+                    dirty = 1;
+                } else if (ev.w == NAQ_MOUSE_WHEEL) {
+                    scroll_by(ev.h * 3);
                     dirty = 1;
                 }
             } else if (ev.type == NAQ_WIN_EVENT_FOCUS) {

@@ -67,7 +67,12 @@ typedef struct naq_boot_info {
     nq_u32 memory_map_desc_version;
     nq_u32 reserved0;
 
-    nq_u64 reserved1;
+    /*
+     * Serial number of the FAT volume the loader started from, so the
+     * kernel can recognise its own boot stick among the USB disks.
+     * Low 32 bits: the serial. Bit 32: set if the loader could read it.
+     */
+    nq_u64 boot_volume;
     nq_u64 reserved2;
     nq_u64 reserved3;
     nq_u64 reserved4;

@@ -39,6 +39,8 @@ static block64_device_t g_block_devices[BLOCK64_MAX_DEVICES];
 static nq_u32 g_block_device_count = 0;
 static block64_device_t* g_boot_device = 0;
 
+static nq_u64 g_boot_volume = 0;
+
 /* ============================================================
  * Device registry
  * ============================================================ */
@@ -53,6 +55,7 @@ static void block64_clear_devices(void) {
         g_block_devices[i].present = 0;
         g_block_devices[i].read_only = 1;
         g_block_devices[i].writes_unlocked = 0;
+        g_block_devices[i].boot_media = 0;
     }
 
     g_block_device_count = 0;
@@ -79,6 +82,7 @@ static block64_device_t* block64_register_device(
     dev->present = 1;
     dev->read_only = read_only ? 1 : 0;
     dev->writes_unlocked = 0;
+    dev->boot_media = 0;
 
     g_block_device_count++;
 
@@ -376,6 +380,7 @@ int block64_usb_attach(nq_u64 sector_count) {
         dev->sector_count = sector_count;
         dev->present = 1;
         dev->writes_unlocked = 0;
+        dev->boot_media = 0;
     } else {
         dev = block64_register_device(
             "usb0",
@@ -399,8 +404,52 @@ void block64_usb_detach(void) {
         if (g_block_devices[i].type == BLOCK64_DEVICE_USB_MSC) {
             g_block_devices[i].present = 0;
             g_block_devices[i].writes_unlocked = 0;
+            g_block_devices[i].boot_media = 0;
         }
     }
+}
+
+void block64_set_boot_volume(nq_u64 boot_volume) {
+    g_boot_volume = boot_volume;
+}
+
+int block64_note_volume_serial(nq_u32 device_id, nq_u32 serial) {
+    if (device_id >= g_block_device_count) {
+        return 0;
+    }
+
+    /*
+     * Bit 32 says the loader managed to read a serial at all.
+     */
+    if (!(g_boot_volume & (1ull << 32)) ||
+        (nq_u32)g_boot_volume != serial) {
+        return 0;
+    }
+
+    block64_device_t* dev = &g_block_devices[device_id];
+
+    if (!dev->present || dev->read_only) {
+        return 0;
+    }
+
+    dev->boot_media = 1;
+    dev->writes_unlocked = 1;
+
+    return 1;
+}
+
+int block64_writes_allowed(nq_u32 device_id) {
+    if (device_id >= g_block_device_count) {
+        return 0;
+    }
+
+    const block64_device_t* dev = &g_block_devices[device_id];
+
+    if (!dev->present || dev->read_only || !dev->writes_unlocked) {
+        return 0;
+    }
+
+    return dev->boot_media || safe_mode64_disk_writes_allowed();
 }
 
 int block64_available(void) {
@@ -661,7 +710,11 @@ int block64_write_device(
         return 0;
     }
 
-    if (!safe_mode64_disk_writes_allowed()) {
+    /*
+     * SAFE_HW protects disks the user did not choose to boot from. The
+     * boot stick itself is exempt.
+     */
+    if (!dev->boot_media && !safe_mode64_disk_writes_allowed()) {
         k64_print("block64: write blocked by SAFE_HW mode\n");
         return 0;
     }

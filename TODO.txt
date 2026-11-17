@@ -442,6 +442,45 @@ blue glass window frames with white title text and orb title buttons
 (an earlier pastel version with faces on everything was dropped as too childish)
 QEMU: build.sh uses KVM automatically when /dev/kvm is usable (QEMU_ACCEL=tcg|kvm to force)
 
+Long file names, timestamps, settings, wheel, Alt+Tab, snapping. // DONE (tested in QEMU only)
+FAT32: new files and folders can have long names (up to 127 characters, ASCII); an 8.3 alias
+  such as MYNOTE~1.TXT is generated and kept unique; deleting removes the long-name entries too;
+  overwriting keeps the existing entry and its names
+FAT32: created/modified times come from the CMOS clock (timer64_read_clock) instead of 1980
+Settings app (SETTINGS.ELF): wallpaper (day, sunset, night), accent colour (7), 12/24-hour clock
+  applied at once; saved in /usb/NAQOS.CFG on the boot stick and loaded at boot
+  SYS_SETTING_GET / SYS_SETTING_SET; accent works by re-mapping the blue glass pixels of the
+  frames, dock and menu, wallpaper variants by re-colouring the rendered scene
+scroll wheel: PS/2 (IntelliMouse 4-byte packets), VM pointer, USB mice; apps get
+  NAQ_MOUSE_WHEEL events; Files and the editor scroll with it
+Alt+Tab switches windows (Tab now goes to the focused app instead of switching)
+window snapping: drag to the left/right edge for half the screen, to the top to maximise;
+  an outline previews it; dragging a snapped window away restores its size
+still to do: apps other than the desktop do not follow the accent colour; Alt+Tab has no
+  on-screen switcher; terminals have no scrollback for the wheel; long names are ASCII only
+
+Boot stick writable, loader starts on its own. // DONE (tested in QEMU only)
+the loader passes the boot volume's FAT serial to the kernel (naq_boot_info_t.boot_volume);
+  a USB disk with that serial is "boot media": writable with no diskunlock, even in SAFE_HW
+every other disk stays locked until "diskunlock confirm"
+loader: no "press any key" before the kernel; a 3 second prompt takes D (display settings),
+  P (pause before starting) or any other key (start now)
+tools/qemu_drive.py: QEMU_BOOT_USB=1 boots from a USB stick, as on a real PC
+SAFE_HW stays the default for real hardware for now: with no AHCI/NVMe driver, turning it off
+  changes nothing on a modern PC (only a legacy IDE disk would be probed, and could become the
+  root filesystem). Revisit when internal-disk drivers exist; that is when the guard matters.
+
+Text editor. // DONE (tested in QEMU only)
+EDIT.ELF: open, edit and save plain text; line numbers, scrollbar, auto-indent, tabs as spaces,
+  keeps Windows line endings, warns before discarding unsaved changes
+Ctrl+S save, Ctrl+O open, Ctrl+N new; toolbar buttons; Open and Save As ask for a path
+Files opens text files (.TXT .CFG .MD .LOG .INI .C .H ...) in the editor
+new syscalls: SYS_WRITE_FILE (whole-file write), SYS_SPAWN_ARG + SYS_GET_ARG (start a program
+  with a file to open)
+saving needs a writable disk: the boot stick under /usb (other disks after "diskunlock confirm")
+still to do: selection, copy/paste, undo, find; a file-picker dialog instead of typing paths;
+  shared widget toolkit for Files and the editor
+
 File manager. // DONE
 FILES.ELF: browse folders, start programs, preview text and .ni images; mouse and keyboard
 SYS_READDIR (directory listing) and SYS_SPAWN (start a program) syscalls

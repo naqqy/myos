@@ -85,6 +85,10 @@ void kmain64(naq_boot_info_t* boot) {
 
     safe_mode64_init();
 
+    if (boot) {
+        block64_set_boot_volume(boot->boot_volume);
+    }
+
     bootlog64_print("kmain64 entered after ExitBootServices.\n");
 
     /*
@@ -185,6 +189,11 @@ void kmain64(naq_boot_info_t* boot) {
      * what was found, before the prompt appears.
      */
     usb64_boot_report();
+
+    /*
+     * The boot stick is mounted by now: pick up the saved desktop settings.
+     */
+    gui64_settings_load();
 
     shell64_init();
 

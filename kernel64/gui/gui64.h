@@ -36,7 +36,8 @@
  *   x, y  pointer position relative to the window's content area
  *   key   buttons currently held (GUI64_MOUSE_BUTTON_*)
  *   w     what happened (GUI64_MOUSE_*)
- *   h     the button that changed, for PRESS/RELEASE
+ *   h     the button that changed, for PRESS/RELEASE; for WHEEL the
+ *         number of steps (positive = scroll down)
  *
  * GUI64_EVENT_RESIZE:
  *   w, h  new content size in pixels; present frames of that size from now on
@@ -44,6 +45,7 @@
 #define GUI64_MOUSE_MOVE    0
 #define GUI64_MOUSE_PRESS   1
 #define GUI64_MOUSE_RELEASE 2
+#define GUI64_MOUSE_WHEEL   3
 
 #define GUI64_MOUSE_BUTTON_LEFT   0x01u
 #define GUI64_MOUSE_BUTTON_RIGHT  0x02u
@@ -69,6 +71,44 @@ typedef struct gui64_event {
 /* Lifecycle ---------------------------------------------------------------- */
 
 void gui64_init(void);
+
+/*
+ * Desktop settings.
+ */
+#define GUI64_SETTING_WALLPAPER 0
+#define GUI64_SETTING_ACCENT    1
+#define GUI64_SETTING_CLOCK12   2
+
+#define GUI64_WALLPAPER_DAY    0
+#define GUI64_WALLPAPER_SUNSET 1
+#define GUI64_WALLPAPER_NIGHT  2
+#define GUI64_WALLPAPER_COUNT  3
+
+#define GUI64_ACCENT_BLUE     0
+#define GUI64_ACCENT_TEAL     1
+#define GUI64_ACCENT_GREEN    2
+#define GUI64_ACCENT_PURPLE   3
+#define GUI64_ACCENT_PINK     4
+#define GUI64_ACCENT_ORANGE   5
+#define GUI64_ACCENT_GRAPHITE 6
+#define GUI64_ACCENT_COUNT    7
+
+/*
+ * Returns the value, or -1 for an unknown setting.
+ */
+int gui64_setting_get(int id);
+
+/*
+ * Applies a setting at once. Returns 0 if the id or value is invalid,
+ * 1 if it was applied for this session only, 2 if it was also saved to
+ * the boot stick.
+ */
+int gui64_setting_set(int id, int value);
+
+/*
+ * Reads the saved settings from the boot stick, if there is one.
+ */
+void gui64_settings_load(void);
 void gui64_enter(void);
 void gui64_exit(void);
 int  gui64_active(void);

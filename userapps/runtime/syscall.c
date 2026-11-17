@@ -131,6 +131,26 @@ int spawn(const char* path) {
     return (int)syscall1(SYS64_SPAWN, (u64)path);
 }
 
+int spawn_arg(const char* path, const char* arg) {
+    return (int)syscall2(SYS64_SPAWN_ARG, (u64)path, (u64)(arg ? arg : ""));
+}
+
+int get_arg(char* buf, u32 buf_size) {
+    return (int)syscall2(SYS64_GET_ARG, (u64)buf, (u64)buf_size);
+}
+
+int setting_get(int id) {
+    return (int)syscall1(SYS64_SETTING_GET, (u64)id);
+}
+
+int setting_set(int id, int value) {
+    return (int)syscall2(SYS64_SETTING_SET, (u64)id, (u64)value);
+}
+
+i64 write_file(const char* path, const void* data, size_t size) {
+    return syscall3(SYS64_WRITE_FILE, (u64)path, (u64)data, (u64)size);
+}
+
 i64 read_file(const char* path, void* buf, size_t buf_size) {
     naq_stat_t st;
     size_t total = 0;

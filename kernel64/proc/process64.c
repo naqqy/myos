@@ -1189,6 +1189,29 @@ int process64_task_info(nq_u32 slot, process64_info_t* out) {
     return 1;
 }
 
+int process64_set_launch_arg(nq_u32 pid, const char* arg) {
+    process64_task_t* task = process64_find_by_pid(pid);
+
+    if (!task || !arg) {
+        return 0;
+    }
+
+    nq_u32 i = 0;
+
+    while (arg[i] && i + 1u < PROCESS64_LAUNCH_ARG_SIZE) {
+        task->launch_arg[i] = arg[i];
+        i++;
+    }
+
+    task->launch_arg[i] = 0;
+
+    return 1;
+}
+
+const char* process64_current_launch_arg(void) {
+    return g_current ? g_current->launch_arg : "";
+}
+
 int process64_info_for_pid(nq_u32 pid, process64_info_t* out) {
     process64_task_t* task = process64_find_by_pid(pid);
 
@@ -1333,6 +1356,7 @@ static void process64_reap_task(process64_task_t* task) {
 
     task->entry = 0;
     task->arg = 0;
+    task->launch_arg[0] = 0;
 
     /*
      * Clear input queue if present.

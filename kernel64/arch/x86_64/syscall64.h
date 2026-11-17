@@ -32,6 +32,11 @@
 #define SYS64_WIN_CREATE_EX   24
 #define SYS64_READDIR         25
 #define SYS64_SPAWN           26
+#define SYS64_WRITE_FILE      27
+#define SYS64_SPAWN_ARG       28
+#define SYS64_GET_ARG         29
+#define SYS64_SETTING_GET     30
+#define SYS64_SETTING_SET     31
 
 #define NAQ_WIN_EVENT_NONE   0
 #define NAQ_WIN_EVENT_KEY    1
@@ -70,6 +75,8 @@ typedef struct naq_dirent {
 #define SYS64_EINVAL     22
 #define SYS64_ENOSYS     38
 #define SYS64_EFAULT     14
+#define SYS64_EACCES     13
+#define SYS64_EIO         5
 
 #define SYS64_ERR(x) ((nq_u64)(0ull - (nq_u64)(x)))
 

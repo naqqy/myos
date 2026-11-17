@@ -42,6 +42,11 @@ typedef u64 size_t;
 #define SYS64_WIN_CREATE_EX   24
 #define SYS64_READDIR         25
 #define SYS64_SPAWN           26
+#define SYS64_WRITE_FILE      27
+#define SYS64_SPAWN_ARG       28
+#define SYS64_GET_ARG         29
+#define SYS64_SETTING_GET     30
+#define SYS64_SETTING_SET     31
 
 /*
  * Keys without an ASCII code (arrows and friends) arrive as these values in
@@ -154,7 +159,8 @@ typedef struct naq_gfx_buffer {
  *         pixels (not scaled to your frame size if they differ)
  *   key   buttons currently held: NAQ_MOUSE_BUTTON_* bits
  *   w     what happened: NAQ_MOUSE_MOVE / PRESS / RELEASE
- *   h     the button that changed, for PRESS and RELEASE
+ *   h     the button that changed, for PRESS and RELEASE; for WHEEL the
+ *         number of steps turned (positive = scroll down)
  *
  * NAQ_WIN_EVENT_RESIZE
  *   w, h  new size of the content area. Present frames of that size to
@@ -164,6 +170,7 @@ typedef struct naq_gfx_buffer {
 #define NAQ_MOUSE_MOVE    0
 #define NAQ_MOUSE_PRESS   1
 #define NAQ_MOUSE_RELEASE 2
+#define NAQ_MOUSE_WHEEL   3
 
 #define NAQ_MOUSE_BUTTON_LEFT   0x01u
 #define NAQ_MOUSE_BUTTON_RIGHT  0x02u
@@ -296,6 +303,49 @@ int readdir(const char* path, naq_dirent_t* entries, u32 max_entries);
  * negative value on failure.
  */
 int spawn(const char* path);
+
+/*
+ * Like spawn(), and hands the new program a piece of text (typically the
+ * path of a file to open), which it reads with get_arg().
+ */
+int spawn_arg(const char* path, const char* arg);
+
+/*
+ * Copies the text this program was started with into buf. Returns its
+ * length (0 if there was none), or a negative value if buf is too small.
+ */
+int get_arg(char* buf, u32 buf_size);
+
+/*
+ * Creates a file or replaces its whole contents. Returns the number of
+ * bytes written, or a negative value:
+ *   NAQ_ERR_LOCKED  disk writes are locked ("diskunlock confirm" in the
+ *                   Terminal unlocks them)
+ *   anything else   the file could not be written (read-only location,
+ *                   name not in 8.3 form, disk full, ...)
+ *
+ * Only FAT32 disks are writable; a USB stick appears under /usb.
+ */
+#define NAQ_ERR_LOCKED (-13)
+
+i64 write_file(const char* path, const void* data, size_t size);
+
+/*
+ * Desktop settings. setting_set() applies the change at once and returns
+ * NAQ_SETTING_SAVED if it was also written to the boot stick (so it
+ * survives a restart), NAQ_SETTING_APPLIED if not, or a negative value
+ * for an invalid setting.
+ */
+#define NAQ_SETTING_WALLPAPER 0   /* 0 day, 1 sunset, 2 night */
+#define NAQ_SETTING_ACCENT    1   /* 0 blue, 1 teal, 2 green, 3 purple,
+                                     4 pink, 5 orange, 6 graphite */
+#define NAQ_SETTING_CLOCK12   2   /* 0 = 24-hour clock, 1 = 12-hour */
+
+#define NAQ_SETTING_APPLIED 1
+#define NAQ_SETTING_SAVED   2
+
+int setting_get(int id);
+int setting_set(int id, int value);
 
 /*
  * Text for apps that draw into their own pixel buffer (8x16 cells).

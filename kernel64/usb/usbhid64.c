@@ -34,6 +34,9 @@
 
 #define MOD_CTRL  0x11u
 #define MOD_SHIFT 0x22u
+#define MOD_ALT   0x44u
+
+#define USAGE_TAB 0x2Bu
 
 #define USAGE_CAPS_LOCK 0x39u
 
@@ -59,6 +62,10 @@ typedef struct pointer_layout {
      * Bit position of buttons 1..3, or -1.
      */
     int button_off[3];
+
+    int has_wheel;
+    nq_u32 wheel_off;
+    nq_u32 wheel_bits;
 } pointer_layout_t;
 
 typedef struct hid_dev {
@@ -150,6 +157,10 @@ static const char g_shifted[] =
 static char key_to_char(nq_u8 usage, nq_u8 mods) {
     int shift = (mods & MOD_SHIFT) != 0;
     int ctrl = (mods & MOD_CTRL) != 0;
+
+    if (usage == USAGE_TAB && (mods & MOD_ALT)) {
+        return (char)KINPUT64_KEY_ALT_TAB;
+    }
 
     if (usage >= 0x04u && usage <= 0x38u) {
         int letter = usage <= 0x1Du;
@@ -303,7 +314,16 @@ static void keyboard_report(hid_dev_t* h, const nq_u8* data, nq_u32 length) {
  * ------------------------------------------------------------
  */
 
-static void push_pointer(hid_dev_t* h, int dx, int dy, nq_u8 buttons, int absolute, nq_u32 ax, nq_u32 ay) {
+static void push_pointer(
+    hid_dev_t* h,
+    int dx,
+    int dy,
+    nq_u8 buttons,
+    int absolute,
+    nq_u32 ax,
+    nq_u32 ay,
+    int wheel
+) {
     mouse64_event_t ev;
 
     ev.dx = dx;
@@ -312,6 +332,7 @@ static void push_pointer(hid_dev_t* h, int dx, int dy, nq_u8 buttons, int absolu
     ev.absolute = absolute;
     ev.abs_x = ax;
     ev.abs_y = ay;
+    ev.wheel = wheel;
 
     h->buttons = buttons;
 
@@ -327,8 +348,14 @@ static void boot_mouse_report(hid_dev_t* h, const nq_u8* data, nq_u32 length) {
     int dx = (nq_s8)data[1];
     int dy = (nq_s8)data[2];
 
-    if (dx || dy || buttons != h->buttons) {
-        push_pointer(h, dx, dy, buttons, 0, 0, 0);
+    /*
+     * A fourth byte, when present, is the wheel. HID counts rolling away
+     * from the user as positive; we count scrolling down as positive.
+     */
+    int wheel = (length >= 4u) ? -(int)(nq_s8)data[3] : 0;
+
+    if (dx || dy || wheel || buttons != h->buttons) {
+        push_pointer(h, dx, dy, buttons, 0, 0, 0, wheel);
     }
 }
 
@@ -401,15 +428,19 @@ static void pointer_report(hid_dev_t* h, const nq_u8* data, nq_u32 length) {
 
     nq_s32 x = get_field(data, length, l->x_off, l->x_bits, l->x_min < 0);
     nq_s32 y = get_field(data, length, l->y_off, l->y_bits, l->y_min < 0);
+    int wheel = l->has_wheel
+        ? -(int)get_field(data, length, l->wheel_off, l->wheel_bits, 1)
+        : 0;
 
     if (l->absolute) {
         push_pointer(
             h, 0, 0, buttons, 1,
             scale_absolute(x, l->x_min, l->x_max),
-            scale_absolute(y, l->y_min, l->y_max)
+            scale_absolute(y, l->y_min, l->y_max),
+            wheel
         );
-    } else if (x || y || buttons != h->buttons) {
-        push_pointer(h, x, y, buttons, 0, 0, 0);
+    } else if (x || y || wheel || buttons != h->buttons) {
+        push_pointer(h, x, y, buttons, 0, 0, 0, wheel);
     }
 }
 
@@ -622,6 +653,10 @@ static int parse_pointer(const nq_u8* d, nq_u32 length, pointer_layout_t* out) {
                             cur.y_bits = report_size;
                             cur.y_min = logical_min;
                             cur.y_max = logical_max;
+                        } else if (page == 1u && id == 0x38u && !cur.has_wheel) {
+                            cur.has_wheel = 1;
+                            cur.wheel_off = bit;
+                            cur.wheel_bits = report_size;
                         }
                     }
 
@@ -789,7 +824,7 @@ void usbhid64_detach(xhci64_t* hc, nq_u8 slot) {
          * Do not leave a button held down by a mouse that is gone.
          */
         if (h->kind == USBHID64_POINTER && h->buttons && !h->layout.absolute) {
-            push_pointer(h, 0, 0, 0, 0, 0, 0);
+            push_pointer(h, 0, 0, 0, 0, 0, 0, 0);
         }
 
         h->used = 0;

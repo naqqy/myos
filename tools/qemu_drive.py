@@ -104,8 +104,20 @@ def make_stick(path):
 
 
 usb_devices = [d for d in os.environ.get("QEMU_USB", "").split(",") if d]
-if usb_devices:
+
+# QEMU_BOOT_USB=1 starts the system from a USB stick instead of an IDE disk,
+# the way it boots on a real PC.
+BOOT_USB = os.environ.get("QEMU_BOOT_USB") == "1"
+
+if usb_devices or BOOT_USB:
     cmd += ["-device", "qemu-xhci,id=xhci"]
+
+if BOOT_USB:
+    i = cmd.index("if=ide,format=raw,file=" + work + "/uefi.img")
+    cmd[i] = "if=none,id=bootdisk,format=raw,file=" + work + "/uefi.img"
+    cmd += ["-device", "usb-storage,bus=xhci.0,drive=bootdisk,bootindex=0"]
+
+if usb_devices:
     hub_port = 0
     for d in usb_devices:
         if d == "disk":
@@ -250,6 +262,16 @@ try:
             pointer_button(True)
             time.sleep(0.06)
             pointer_button(False)
+        elif op == "wheel":
+            # wheel:N turns the wheel N steps (positive = scroll down)
+            steps = int(arg)
+            name = "wheel-down" if steps > 0 else "wheel-up"
+            for _ in range(abs(steps)):
+                for down in (True, False):
+                    qmp("input-send-event", {"events": [
+                        {"type": "btn",
+                         "data": {"down": down, "button": name}}]})
+                time.sleep(0.05)
         elif op == "dclick":
             for _ in range(2):
                 pointer_button(True)

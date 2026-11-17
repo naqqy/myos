@@ -22,6 +22,12 @@ typedef struct mouse64_event {
     int dy;
     nq_u8 buttons;
 
+    /*
+     * Scroll wheel steps since the last event. Positive = rolled toward
+     * the user (scroll down).
+     */
+    int wheel;
+
     int absolute;
     nq_u32 abs_x;
     nq_u32 abs_y;

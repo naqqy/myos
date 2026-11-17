@@ -39,6 +39,12 @@ int vfs64_mount_root(void);
 int vfs64_usb_mount(nq_u32 block_device_id, nq_u64 base_lba);
 void vfs64_usb_unmount(void);
 int vfs64_usb_mounted(void);
+
+/*
+ * 1 if the path is on a disk whose writes are currently locked (so the
+ * caller can say "unlock it first" rather than "cannot write there").
+ */
+int vfs64_write_locked(const char* path);
 int vfs64_mounted(void);
 
 void vfs64_print_summary(void);

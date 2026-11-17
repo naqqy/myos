@@ -140,6 +140,12 @@ typedef struct gui64_window {
     int active;
     int minimized;
     int maximized;
+
+    /*
+     * 1 while the window fills the left or right half of the screen after
+     * being dragged to that edge; `restore` holds its size from before.
+     */
+    int snapped;
     gui64_rect_t restore;
 
     char title[32];
@@ -285,7 +291,16 @@ static nq_u64 g_last_icon_click_tick = 0;
 static int g_last_title_click_window = 0;
 static nq_u64 g_last_title_click_tick = 0;
 
-static char g_clock_text[8] = "--:--";
+static char g_clock_text[12] = "--:--";
+
+/*
+ * Desktop settings (see gui64_setting_set). Kept in /usb/NAQOS.CFG.
+ */
+static int g_set_wallpaper = 0;   /* GUI64_WALLPAPER_* */
+static int g_set_accent = 0;      /* GUI64_ACCENT_* */
+static int g_set_clock12 = 0;     /* 1 = 12-hour clock */
+
+static void wallpaper_grade(void);
 static nq_u64 g_clock_checked_tick = 0;
 
 static char g_shell_queue[GUI64_SHELL_QUEUE_SIZE];
@@ -1325,6 +1340,14 @@ static nq_u32 icon_color(const char* name) {
         return 0x00FFA800u;
     }
 
+    if (app_is(name, "SETTINGS") || app_is(name, "Settings")) {
+        return 0x00708AA4u;
+    }
+
+    if (app_is(name, "EDIT") || app_is(name, "Editor")) {
+        return 0x00FF5C9Au;
+    }
+
     if (app_is(name, "CUBE") || app_is(name, "3D Cube")) {
         return 0x0000A8FFu;
     }
@@ -1539,6 +1562,74 @@ static void chrome_paint(gui64_window_t* win) {
  * Draws the frame and title bar into the window surface. The content area
  * is left untouched.
  */
+/*
+ * Accent colour.
+ *
+ * The window frames, dock and start menu are painted in blue glass. Any
+ * other accent is produced afterwards by re-mapping those pixels: a pixel
+ * counts as "blue glass" when blue is its strongest channel and red its
+ * weakest, and its three channels are then swapped around to give the same
+ * shading in another hue. Whites and greys are unchanged by this, and
+ * so are the coloured title buttons and app orbs (which are not
+ * blue-dominant), so the close button stays red.
+ */
+static nq_u32 accent_pixel(nq_u32 c) {
+    nq_u32 r = (c >> 16) & 0xFFu;
+    nq_u32 g = (c >> 8) & 0xFFu;
+    nq_u32 b = c & 0xFFu;
+
+    if (!(b > g && g >= r)) {
+        return c;
+    }
+
+    nq_u32 top = c & 0xFF000000u;
+
+    switch (g_set_accent) {
+        case GUI64_ACCENT_TEAL:
+            return top | rgb(r, b, (g + b) / 2u);
+
+        case GUI64_ACCENT_GREEN:
+            return top | rgb(r, b, g);
+
+        case GUI64_ACCENT_PURPLE:
+            return top | rgb(g, r, b);
+
+        case GUI64_ACCENT_PINK:
+            return top | rgb(b, r, g);
+
+        case GUI64_ACCENT_ORANGE:
+            return top | rgb(b, g, r);
+
+        case GUI64_ACCENT_GRAPHITE: {
+            nq_u32 v = (r + g + b) / 3u;
+
+            return top | rgb(v, v, v + (255u - v) / 10u);
+        }
+
+        default:
+            return c;
+    }
+}
+
+static void accent_apply(gui64_surface_t* s, gui64_rect_t r) {
+    if (g_set_accent == GUI64_ACCENT_BLUE || !s || !s->px) {
+        return;
+    }
+
+    int x0 = r.x < 0 ? 0 : r.x;
+    int y0 = r.y < 0 ? 0 : r.y;
+    int x1 = r.x + r.w > s->w ? s->w : r.x + r.w;
+    int y1 = r.y + r.h > s->h ? s->h : r.y + r.h;
+
+    for (int y = y0; y < y1; y++) {
+        nq_u32* row = s->px + (nq_u64)y * (nq_u64)s->w;
+
+        for (int x = x0; x < x1; x++) {
+            row[x] = accent_pixel(row[x]);
+        }
+    }
+}
+
 static void window_draw_chrome(gui64_window_t* win) {
     win->chrome_dirty = 0;
 
@@ -1563,6 +1654,18 @@ static void window_draw_chrome(gui64_window_t* win) {
         draw_clip(bands[i]);
         chrome_paint(win);
     }
+
+    /*
+     * The bands overlap at the corners; recolour each pixel once.
+     */
+    accent_apply(&win->surface, bands[0]);
+    accent_apply(&win->surface, bands[3]);
+    accent_apply(&win->surface,
+                 rect_make(0, GUI64_CONTENT_Y, GUI64_FRAME,
+                           h - GUI64_CONTENT_Y - GUI64_FRAME));
+    accent_apply(&win->surface,
+                 rect_make(w - GUI64_FRAME, GUI64_CONTENT_Y, GUI64_FRAME,
+                           h - GUI64_CONTENT_Y - GUI64_FRAME));
 }
 
 static void window_fill_content(gui64_window_t* win, nq_u32 color) {
@@ -1648,6 +1751,38 @@ static gui64_rect_t icon_cell_rect(int index) {
 static void draw_icon_glyph(int cx, int cy, const char* label, nq_u32 base) {
     nq_u32 white = 0x00FFFFFFu;
     nq_u32 shade = mix(base, 0x00001030u, 1, 2);
+
+    if (name_is(label, "SETTINGS")) {
+        /*
+         * Gear: a ring with eight teeth.
+         */
+        static const int tooth[8][2] = {
+            { 0, -12 }, { 9, -9 }, { 12, 0 }, { 9, 9 },
+            { 0, 12 }, { -9, 9 }, { -12, 0 }, { -9, -9 }
+        };
+
+        for (int i = 0; i < 8; i++) {
+            disc(cx + tooth[i][0], cy + tooth[i][1], 3, white, 255);
+        }
+
+        disc(cx, cy, 10, white, 255);
+        disc(cx, cy, 4, shade, 255);
+        return;
+    }
+
+    if (name_is(label, "EDIT")) {
+        /*
+         * Sheet of paper with lines of writing.
+         */
+        rrect_fill(cx - 9, cy - 11, 20, 25, 3, shade);
+        rrect_fill(cx - 10, cy - 12, 20, 24, 3, white);
+
+        for (int i = 0; i < 4; i++) {
+            fill(cx - 6, cy - 7 + i * 5, i == 3 ? 7 : 12, 2, shade);
+        }
+
+        return;
+    }
 
     if (name_is(label, "FILES")) {
         /*
@@ -2371,16 +2506,39 @@ static int clock_update(void) {
         return 0;
     }
 
-    char text[8];
+    char text[12];
+    int n = 0;
 
-    text[0] = (char)('0' + hour / 10);
-    text[1] = (char)('0' + hour % 10);
-    text[2] = ':';
-    text[3] = (char)('0' + minute / 10);
-    text[4] = (char)('0' + minute % 10);
-    text[5] = 0;
+    if (g_set_clock12) {
+        int shown = hour % 12;
 
-    for (int i = 0; i < 6; i++) {
+        if (shown == 0) {
+            shown = 12;
+        }
+
+        if (shown >= 10) {
+            text[n++] = '1';
+        }
+
+        text[n++] = (char)('0' + shown % 10);
+    } else {
+        text[n++] = (char)('0' + hour / 10);
+        text[n++] = (char)('0' + hour % 10);
+    }
+
+    text[n++] = ':';
+    text[n++] = (char)('0' + minute / 10);
+    text[n++] = (char)('0' + minute % 10);
+
+    if (g_set_clock12) {
+        text[n++] = ' ';
+        text[n++] = hour >= 12 ? 'P' : 'A';
+        text[n++] = 'M';
+    }
+
+    text[n] = 0;
+
+    for (int i = 0; i <= n; i++) {
         if (text[i] != g_clock_text[i]) {
             str_copy64(g_clock_text, text, sizeof(g_clock_text));
             return 1;
@@ -2477,7 +2635,16 @@ static void taskbar_render(void) {
     /*
      * One glass pill per window.
      */
-    int limit = w - GUI64_DOCK_MARGIN - GUI64_TASK_CLOCK_W - 20;
+    /*
+     * "14:05" or "2:05 PM": the clock takes as much room as its text.
+     */
+    int clock_w = (int)str_len64(g_clock_text) * 8 + 22;
+
+    if (clock_w < GUI64_TASK_CLOCK_W) {
+        clock_w = GUI64_TASK_CLOCK_W;
+    }
+
+    int limit = w - GUI64_DOCK_MARGIN - clock_w - 20;
 
     for (int i = 0; ; i++) {
         gui64_window_t* win = taskbar_window(i);
@@ -2510,10 +2677,12 @@ static void taskbar_render(void) {
     /*
      * Clock.
      */
-    int clock_x = w - GUI64_DOCK_MARGIN - GUI64_TASK_CLOCK_W - 2;
+    int clock_x = w - GUI64_DOCK_MARGIN - clock_w - 2;
 
     draw_text(clock_x + 9, mid - 7, g_clock_text, rgb(0, 40, 100), -1);
     draw_text(clock_x + 8, mid - 8, g_clock_text, 0x00FFFFFFu, -1);
+
+    accent_apply(&g_taskbar, rect_make(0, 0, g_taskbar.w, g_taskbar.h));
 
     damage_add(taskbar_rect());
 }
@@ -2678,6 +2847,8 @@ static void menu_render(void) {
             draw_text(40, y + 5, label, rgb(10, 60, 120), max_chars);
         }
     }
+
+    accent_apply(&g_menu, rect_make(0, 0, g_menu.w, g_menu.h));
 
     damage_add(menu_damage_rect());
 }
@@ -3736,11 +3907,83 @@ static void desktop_click(int x, int y) {
     desktop_select_icon(hit);
 }
 
+/*
+ * Window snapping: dragging a window until the pointer touches a screen
+ * edge offers to fill that half of the screen (left/right) or all of it
+ * (top). An outline shows what will happen; letting go does it.
+ */
+#define GUI64_SNAP_NONE  0
+#define GUI64_SNAP_LEFT  1
+#define GUI64_SNAP_RIGHT 2
+#define GUI64_SNAP_TOP   3
+
+static int g_snap = GUI64_SNAP_NONE;
+
+static gui64_rect_t snap_rect(int snap) {
+    int h = g_screen_h - GUI64_TASKBAR_H;
+    int half = g_screen_w / 2;
+
+    if (snap == GUI64_SNAP_LEFT) {
+        return rect_make(0, 0, half, h);
+    }
+
+    if (snap == GUI64_SNAP_RIGHT) {
+        return rect_make(half, 0, g_screen_w - half, h);
+    }
+
+    return rect_make(0, 0, g_screen_w, h);
+}
+
+static void snap_update(void) {
+    int snap = GUI64_SNAP_NONE;
+
+    if (g_cursor_x <= 1) {
+        snap = GUI64_SNAP_LEFT;
+    } else if (g_cursor_x >= g_screen_w - 2) {
+        snap = GUI64_SNAP_RIGHT;
+    } else if (g_cursor_y <= 1) {
+        snap = GUI64_SNAP_TOP;
+    }
+
+    if (snap == g_snap) {
+        return;
+    }
+
+    if (g_outline_visible) {
+        outline_damage();
+    }
+
+    g_snap = snap;
+    g_outline_visible = (snap != GUI64_SNAP_NONE);
+
+    if (g_outline_visible) {
+        g_outline = snap_rect(snap);
+        outline_damage();
+    }
+}
+
 static void drag_begin_move(gui64_window_t* win) {
+    if (win->snapped) {
+        /*
+         * Pulling a snapped window away gives it its old size back, with
+         * the same spot of the title bar still under the pointer.
+         */
+        int grab = g_cursor_x - win->x;
+        int old_w = win->w > 0 ? win->w : 1;
+        int new_w = win->restore.w;
+
+        win->snapped = 0;
+
+        wm_resize(win, win->restore.w, win->restore.h);
+        wm_move(win, g_cursor_x - (int)(((nq_s64)grab * new_w) / old_w), win->y);
+    }
+
     g_drag_mode = GUI64_DRAG_MOVE;
     g_drag_window = win->id;
     g_drag_dx = g_cursor_x - win->x;
     g_drag_dy = g_cursor_y - win->y;
+    g_drag_origin = window_rect(win);
+    g_snap = GUI64_SNAP_NONE;
 }
 
 static void drag_begin_resize(gui64_window_t* win) {
@@ -3790,6 +4033,7 @@ static void drag_update(void) {
         }
 
         wm_move(win, x, y);
+        snap_update();
         return;
     }
 
@@ -3872,6 +4116,32 @@ static void drag_end(void) {
             wm_move(win, g_outline.x, g_outline.y);
             wm_resize(win, g_outline.w, g_outline.h);
         }
+    }
+
+    if (g_drag_mode == GUI64_DRAG_MOVE && g_snap != GUI64_SNAP_NONE) {
+        outline_damage();
+        g_outline_visible = 0;
+
+        if (win) {
+            if (g_snap == GUI64_SNAP_TOP) {
+                /*
+                 * Put it back where the drag began first, so that is the
+                 * place it returns to when un-maximised.
+                 */
+                wm_move(win, g_drag_origin.x, g_drag_origin.y);
+                wm_set_maximized(win, 1);
+            } else {
+                gui64_rect_t r = snap_rect(g_snap);
+
+                win->restore = g_drag_origin;
+                win->snapped = 1;
+
+                wm_move(win, r.x, r.y);
+                wm_resize(win, r.w, r.h);
+            }
+        }
+
+        g_snap = GUI64_SNAP_NONE;
     }
 
     g_drag_mode = GUI64_DRAG_NONE;
@@ -4066,6 +4336,22 @@ static void mouse_moved(void) {
     }
 }
 
+/*
+ * The wheel scrolls whatever app is under the pointer, or the focused one
+ * if the pointer is not over an app's content.
+ */
+static void mouse_wheel(int steps) {
+    gui64_window_t* win = window_at(g_cursor_x, g_cursor_y);
+
+    if (!win ||
+        window_part_at(win, g_cursor_x - win->x, g_cursor_y - win->y) !=
+            GUI64_PART_CONTENT) {
+        win = focused_window();
+    }
+
+    send_mouse_event(win, GUI64_MOUSE_WHEEL, (nq_u32)steps);
+}
+
 static void handle_mouse(void) {
     mouse64_event_t ev;
 
@@ -4136,6 +4422,10 @@ static void handle_mouse(void) {
                 (ev.buttons & MOUSE64_BUTTON_MIDDLE) != 0
             );
         }
+
+        if (ev.wheel) {
+            mouse_wheel(ev.wheel);
+        }
     }
 }
 
@@ -4164,7 +4454,7 @@ static void handle_keyboard(void) {
 
         /*
          * Desktop hotkeys:
-         *   Tab     next window
+         *   Alt+Tab next window
          *   Ctrl+T  back to text mode
          *   Ctrl+Q  close the focused window
          *   Esc     close the start menu
@@ -4174,7 +4464,7 @@ static void handle_keyboard(void) {
             continue;
         }
 
-        if (c == '\t') {
+        if (c == KINPUT64_KEY_ALT_TAB) {
             gui64_next_window();
             continue;
         }
@@ -4374,6 +4664,7 @@ static int screen_prepare(void) {
     }
 
     wallpaper_render();
+    wallpaper_grade();
 
     return 1;
 }
@@ -5041,4 +5332,288 @@ int gui64_push_close_to_focused(void) {
     GUI64_UNLOCK();
 
     return ok;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Settings                                                                    */
+/* -------------------------------------------------------------------------- */
+
+#define GUI64_SETTINGS_PATH "/usb/NAQOS.CFG"
+
+/*
+ * Wallpaper variants are the daytime scene with different light: the
+ * finished picture is re-coloured, then given a moon and stars at night.
+ */
+static void wallpaper_grade(void) {
+    if (!g_wallpaper.px || g_set_wallpaper == GUI64_WALLPAPER_DAY) {
+        return;
+    }
+
+    int w = g_screen_w;
+    int h = g_screen_h;
+    int horizon = (h * 62) / 100;
+
+    for (int y = 0; y < h; y++) {
+        nq_u32* row = g_wallpaper.px + (nq_u64)y * (nq_u64)w;
+
+        /*
+         * 0 at the top of the sky, 255 at the horizon. The land gets a
+         * gentler version of the horizon's light.
+         */
+        nq_u32 t = y < horizon ? (nq_u32)((y * 255) / horizon) : 150u;
+
+        for (int x = 0; x < w; x++) {
+            nq_u32 c = row[x];
+            nq_u32 r = (c >> 16) & 0xFFu;
+            nq_u32 g = (c >> 8) & 0xFFu;
+            nq_u32 b = c & 0xFFu;
+
+            if (g_set_wallpaper == GUI64_WALLPAPER_SUNSET) {
+                /*
+                 * Warm light: red lifted, green and blue held back, more
+                 * so toward the horizon.
+                 */
+                r = r + ((255u - r) * (40u + t / 3u)) / 255u;
+                g = (g * (215u - t / 5u)) / 255u;
+                b = (b * (190u - t / 3u)) / 255u;
+            } else {
+                /*
+                 * Night: everything dim, blue surviving best.
+                 */
+                r = (r * 46u) / 255u;
+                g = (g * 66u) / 255u;
+                b = (b * 118u) / 255u + 6u;
+            }
+
+            row[x] = rgb(r, g, b);
+        }
+    }
+
+    if (g_set_wallpaper != GUI64_WALLPAPER_NIGHT) {
+        return;
+    }
+
+    draw_to(&g_wallpaper);
+
+    /*
+     * Stars, only where the sky is clear (dark).
+     */
+    nq_u32 seed = 0x5EED1234u;
+    int stars = (w * horizon) / 2600;
+
+    for (int i = 0; i < stars; i++) {
+        int x = (int)(wallpaper_random(&seed) % (nq_u32)w);
+        int y = (int)(wallpaper_random(&seed) % (nq_u32)((horizon * 8) / 10 + 1));
+        nq_u32 c = g_wallpaper.px[(nq_u64)y * (nq_u64)w + x];
+
+        if ((((c >> 16) & 0xFFu) + ((c >> 8) & 0xFFu) + (c & 0xFFu)) > 150u) {
+            continue;
+        }
+
+        nq_u32 brightness = 110u + wallpaper_random(&seed) % 146u;
+
+        blend_pixel(x, y, 0x00FFFFFFu, brightness);
+
+        if ((wallpaper_random(&seed) & 7u) == 0) {
+            blend_pixel(x + 1, y, 0x00FFFFFFu, brightness / 2u);
+            blend_pixel(x, y + 1, 0x00FFFFFFu, brightness / 2u);
+        }
+    }
+
+    /*
+     * The moon, where the sun was.
+     */
+    int moon_x = (w * 86) / 100;
+    int moon_y = (h * 12) / 100;
+
+    disc(moon_x, moon_y, h / 7, rgb(170, 200, 255), 22);
+    disc(moon_x, moon_y, h / 11, rgb(190, 214, 255), 34);
+    disc(moon_x, moon_y, h / 24, rgb(240, 244, 255), 255);
+    disc(moon_x - h / 80, moon_y - h / 90, h / 110, rgb(214, 222, 240), 255);
+    disc(moon_x + h / 70, moon_y + h / 120, h / 150, rgb(218, 226, 242), 255);
+}
+
+/*
+ * Redraws everything a setting can affect. Call with the GUI lock held.
+ */
+static void settings_refresh(void) {
+    if (!g_wallpaper.px) {
+        /*
+         * The desktop has not been shown yet; it will pick the settings
+         * up when it is.
+         */
+        return;
+    }
+
+    wallpaper_render();
+    wallpaper_grade();
+    desktop_render();
+
+    for (int i = 0; i < GUI64_MAX_WINDOWS; i++) {
+        if (g_windows[i].used) {
+            g_windows[i].chrome_dirty = 1;
+        }
+    }
+
+    g_taskbar_dirty = 1;
+    g_clock_checked_tick = 0;
+
+    if (g_menu_open) {
+        menu_render();
+    }
+
+    damage_all();
+}
+
+static void settings_append(char* out, nq_u32 size, const char* key, int value) {
+    nq_u32 n = 0;
+
+    while (out[n]) {
+        n++;
+    }
+
+    for (nq_u32 i = 0; key[i] && n + 1u < size; i++) {
+        out[n++] = key[i];
+    }
+
+    if (n + 4u < size) {
+        out[n++] = '=';
+        out[n++] = (char)('0' + (value % 10));
+        out[n++] = '\n';
+    }
+
+    out[n] = 0;
+}
+
+/*
+ * Writes the settings to the boot stick. Returns 1 if they were saved.
+ */
+static int settings_save(void) {
+    char text[96];
+
+    /*
+     * Ask first, so a missing or locked stick is not reported as an error
+     * on the calling program's console.
+     */
+    if (!vfs64_usb_mounted() || vfs64_write_locked(GUI64_SETTINGS_PATH)) {
+        return 0;
+    }
+
+    text[0] = 0;
+
+    settings_append(text, sizeof(text), "wallpaper", g_set_wallpaper);
+    settings_append(text, sizeof(text), "accent", g_set_accent);
+    settings_append(text, sizeof(text), "clock12", g_set_clock12);
+
+    return vfs64_write_file(GUI64_SETTINGS_PATH, text, str_len64(text));
+}
+
+static int settings_key_is(const char* line, const char* key) {
+    int i = 0;
+
+    while (key[i]) {
+        if (line[i] != key[i]) {
+            return 0;
+        }
+
+        i++;
+    }
+
+    return line[i] == '=';
+}
+
+void gui64_settings_load(void) {
+    char text[128];
+    vfs64_stat_t st;
+    nq_u64 size = 0;
+
+    if (!vfs64_usb_mounted() ||
+        !vfs64_stat(GUI64_SETTINGS_PATH, &st) ||
+        st.type != VFS64_TYPE_FILE ||
+        st.size >= sizeof(text)) {
+        return;
+    }
+
+    if (!vfs64_read_file(GUI64_SETTINGS_PATH, text, sizeof(text) - 1u, &size)) {
+        return;
+    }
+
+    text[size] = 0;
+
+    GUI64_LOCK();
+
+    for (nq_u64 i = 0; i < size; ) {
+        const char* line = &text[i];
+        nq_u64 end = i;
+
+        while (end < size && text[end] != '\n') {
+            end++;
+        }
+
+        /*
+         * "key=D" with a single digit.
+         */
+        for (nq_u64 k = i; k + 1u < end; k++) {
+            if (text[k] == '=' && text[k + 1u] >= '0' && text[k + 1u] <= '9') {
+                int value = text[k + 1u] - '0';
+
+                if (settings_key_is(line, "wallpaper") && value < GUI64_WALLPAPER_COUNT) {
+                    g_set_wallpaper = value;
+                } else if (settings_key_is(line, "accent") && value < GUI64_ACCENT_COUNT) {
+                    g_set_accent = value;
+                } else if (settings_key_is(line, "clock12") && value <= 1) {
+                    g_set_clock12 = value;
+                }
+
+                break;
+            }
+        }
+
+        i = end + 1u;
+    }
+
+    settings_refresh();
+
+    GUI64_UNLOCK();
+}
+
+int gui64_setting_get(int id) {
+    switch (id) {
+        case GUI64_SETTING_WALLPAPER: return g_set_wallpaper;
+        case GUI64_SETTING_ACCENT:    return g_set_accent;
+        case GUI64_SETTING_CLOCK12:   return g_set_clock12;
+        default:                      return -1;
+    }
+}
+
+int gui64_setting_set(int id, int value) {
+    if (value < 0) {
+        return 0;
+    }
+
+    GUI64_LOCK();
+
+    int ok = 1;
+
+    if (id == GUI64_SETTING_WALLPAPER && value < GUI64_WALLPAPER_COUNT) {
+        g_set_wallpaper = value;
+    } else if (id == GUI64_SETTING_ACCENT && value < GUI64_ACCENT_COUNT) {
+        g_set_accent = value;
+    } else if (id == GUI64_SETTING_CLOCK12 && value <= 1) {
+        g_set_clock12 = value;
+    } else {
+        ok = 0;
+    }
+
+    if (ok) {
+        settings_refresh();
+    }
+
+    GUI64_UNLOCK();
+
+    if (!ok) {
+        return 0;
+    }
+
+    return settings_save() ? 2 : 1;
 }
