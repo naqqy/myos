@@ -16,6 +16,19 @@ typedef struct vfs64_stat {
 
 int vfs64_stat(const char* path, vfs64_stat_t* out);
 
+typedef void (*vfs64_enum_cb_t)(
+    const char* name,
+    nq_u64 size,
+    int is_dir,
+    void* ctx
+);
+
+/*
+ * Calls cb for every entry directly inside the directory at `path`.
+ * Returns 0 if the directory cannot be listed.
+ */
+int vfs64_enum_dir(const char* path, vfs64_enum_cb_t cb, void* ctx);
+
 int vfs64_mount_root(void);
 int vfs64_mounted(void);
 
@@ -24,6 +37,18 @@ void vfs64_print_summary(void);
 int vfs64_normalize_path(const char* input, char* output, nq_u64 output_size);
 
 int vfs64_list_dir(const char* path);
+/*
+ * Reads a whole file into a kmalloc64() buffer sized to the file.
+ * The caller owns *out_buf and must kfree64() it. Fails if the file is
+ * missing, is a directory, or is larger than max_bytes.
+ */
+int vfs64_read_file_alloc(
+    const char* path,
+    nq_u64 max_bytes,
+    void** out_buf,
+    nq_u64* out_size
+);
+
 int vfs64_read_file(
     const char* path,
     void* out_buf,

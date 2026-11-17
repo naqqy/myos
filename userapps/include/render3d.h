@@ -18,7 +18,11 @@
 #define R3D_FP_SHIFT 12
 #define R3D_FP_ONE   (1 << R3D_FP_SHIFT)
 
-#define R3D_MAX_MESH_VERTICES 128u
+/*
+ * r3d_draw_mesh() keeps per-vertex scratch arrays on the stack
+ * (about 40 bytes per vertex), so this bounds stack use.
+ */
+#define R3D_MAX_MESH_VERTICES 1024u
 
 #define R3D_FLAG_WIREFRAME      0x00000001u
 #define R3D_FLAG_BACKFACE_CULL  0x00000002u
@@ -44,11 +48,25 @@ typedef struct r3d_vertex2 {
     i32 z;
 } r3d_vertex2_t;
 
+/*
+ * Triangle corner indices. Used both for vertex indices (mesh.tris) and for
+ * texture-coordinate indices (mesh.tri_uvs). Matches the NMODEL file layout.
+ */
 typedef struct r3d_tri {
-    u8 a;
-    u8 b;
-    u8 c;
+    u16 a;
+    u16 b;
+    u16 c;
 } r3d_tri_t;
+
+/*
+ * Texture: 0x00RRGGBB pixels, row 0 at the top. Sampling wraps, so u/v
+ * outside 0..1 tile the image.
+ */
+typedef struct r3d_texture {
+    const u32* pixels;
+    u32 width;
+    u32 height;
+} r3d_texture_t;
 
 typedef struct r3d_mesh {
     const r3d_vec3_t* vertices;
@@ -62,6 +80,16 @@ typedef struct r3d_mesh {
      * If null, the renderer uses a default aqua color.
      */
     const u32* tri_colors;
+
+    /*
+     * Optional texture mapping. A triangle is textured when uvs, tri_uvs
+     * and texture are all set; otherwise it is flat shaded with tri_colors.
+     * uvs are R3D_FP_ONE == 1.0; tri_uvs[i] indexes uvs for triangle i.
+     */
+    const r3d_vec2_t* uvs;
+    u32 uv_count;
+    const r3d_tri_t* tri_uvs;
+    const r3d_texture_t* texture;
 } r3d_mesh_t;
 
 typedef struct r3d_camera {
@@ -165,6 +193,45 @@ void r3d_draw_mesh(
     r3d_mat4_t model,
     const r3d_camera_t* cam
 );
+
+void r3d_draw_triangle_textured(
+    r3d_context_t* ctx,
+    r3d_vertex2_t a,
+    r3d_vertex2_t b,
+    r3d_vertex2_t c,
+    r3d_vec2_t uva,
+    r3d_vec2_t uvb,
+    r3d_vec2_t uvc,
+    const r3d_texture_t* texture,
+    int brightness
+);
+
+/*
+ * Assets.
+ *
+ * Both parsers work in place: the returned mesh/texture points into `data`,
+ * so the buffer must stay alive (and unmodified) while it is in use.
+ * They validate every count, offset and index against `size` and return 0
+ * for anything malformed.
+ */
+int r3d_model_parse(const void* data, u64 size, r3d_mesh_t* out);
+int r3d_texture_parse(const void* data, u64 size, r3d_texture_t* out);
+
+/*
+ * Convenience loaders: read the file into `buf` (capacity `buf_size`) and
+ * parse it. Return 1 on success, 0 if the file is missing, too large for
+ * the buffer, or malformed.
+ */
+int r3d_model_load(const char* path, void* buf, u64 buf_size, r3d_mesh_t* out);
+int r3d_texture_load(
+    const char* path,
+    void* buf,
+    u64 buf_size,
+    r3d_texture_t* out
+);
+
+u32 r3d_texture_sample(const r3d_texture_t* texture, i32 u, i32 v);
+u32 r3d_shade(u32 color, int brightness);
 
 /*
  * Built-in test mesh.

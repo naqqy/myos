@@ -246,12 +246,9 @@ static void shell64_echo_append(const char* arg) {
     k64_print("\n");
 }
 
-static void shell64_prompt(void) {
-    if (g_shell64_graphics_view_active &&
-        !gui64_has_focused_terminal_window()) {
-        return;
-    }
+static void shell64_enter_text_mode(void);
 
+static void shell64_prompt(void) {
     k64_print("KER64 > ");
 }
 
@@ -388,7 +385,7 @@ static void shell64_print_help(const char* page_arg) {
     }
     else if (page_num == 4) {
         k64_print("  busytest      - create CPU-bound preemption test tasks\n");
-        k64_print("  usertest      - enter ring 3 iretq test\n");
+        k64_print("  usertest      - ring 3 fault test (runs crash app)\n");
         k64_print("  apptest       - spawn /apps/HELLO.ELF as process64 task\n");
         k64_print("  run <file>    - spawn and run ELF64 app\n");
         k64_print("  spawn <file>  - spawn ELF64 app as task\n");
@@ -1163,7 +1160,16 @@ static void shell64_execute_command(void) {
         shell64_start_busy_test();
     }
     else if (str_eq(arg, "usertest")) {
-        usermode64_enter_test();
+        /*
+         * The original ring 3 proof of concept ran test code from inside
+         * the kernel image by marking kernel pages user-accessible in the
+         * shared page tables, and never returned to the shell. Real ELF
+         * apps now exercise ring 3 in their own address space, so this
+         * runs one of those instead.
+         */
+        k64_print("usertest: ring 3 is tested with real apps now.\n");
+        k64_print("usertest: running /apps/CRASH.ELF (it should be killed by a page fault).\n");
+        shell64_run_app("crash");
     }
     else if (str_eq(arg, "apptest")) {
         int pid = elf64_spawn_file_ex(
@@ -1241,10 +1247,7 @@ static void shell64_execute_command(void) {
         gui64_enter();
     }
     else if (str_eq(arg, "text") || str_eq(arg, "textmode")) {
-        g_shell64_graphics_view_active = 0;
-        gui64_exit();
-        terminal64_switch(terminal64_kernel());
-        k64_clear_screen();
+        shell64_enter_text_mode();
     }
     else if (str_eq(arg, "guitab")) {
         gui64_next_window();
@@ -1278,8 +1281,11 @@ void shell64_init(void) {
 }
 
 void shell64_put_char(char c) {
-    int echo_enabled = !g_shell64_graphics_view_active ||
-        gui64_has_focused_terminal_window();
+    /*
+     * Keys only reach the shell when they were typed at its terminal (the
+     * text console, or the terminal window on the desktop), so always echo.
+     */
+    int echo_enabled = 1;
 
     if (c == '\r') {
         return;
@@ -1332,7 +1338,36 @@ void shell64_put_char(char c) {
 
 }
 
+/*
+ * Leaves the desktop and returns to the full-screen text console.
+ */
+static void shell64_enter_text_mode(void) {
+    g_shell64_graphics_view_active = 0;
+    gui64_exit();
+    terminal64_switch(terminal64_kernel());
+    k64_clear_screen();
+}
+
 static void shell64_route_pending_input(void) {
+    /*
+     * While the desktop is running it owns the keyboard: it handles its own
+     * hotkeys, sends keys to the focused app window, and queues the keys
+     * typed into the terminal window for us.
+     */
+    if (gui64_active()) {
+        for (;;) {
+            int c = gui64_shell_key_pop();
+
+            if (c == 0) {
+                break;
+            }
+
+            shell64_put_char((char)c);
+        }
+
+        return;
+    }
+
     for (;;) {
         int c = kinput64_poll_char();
 
@@ -1345,44 +1380,6 @@ static void shell64_route_pending_input(void) {
             continue;
         }
 
-        if (gui64_active()) {
-            /*
-             * GUI hotkeys for this POC:
-             *   Tab    cycles focused window
-             *   Ctrl+T returns to terminal/text mode
-             *   Ctrl+Q sends CLOSE to focused app window
-             */
-            if (c == '\t') {
-                gui64_next_window();
-                continue;
-            }
-
-            if (c == 20) { /* Ctrl+T */
-                g_shell64_graphics_view_active = 0;
-                gui64_exit();
-                terminal64_switch(terminal64_kernel());
-                k64_clear_screen();
-                shell64_clear_input();
-                shell64_prompt();
-                continue;
-            }
-
-            if (c == 17) { /* Ctrl+Q */
-                gui64_push_close_to_focused();
-                continue;
-            }
-
-            if (gui64_has_focused_app_window()) {
-                gui64_push_key_to_focused((char)c);
-                continue;
-            }
-
-            if (gui64_has_focused_terminal_window()) {
-                shell64_put_char((char)c);
-                continue;
-            }
-        }
-
         shell64_put_char((char)c);
     }
 }
@@ -1392,23 +1389,18 @@ void shell64_poll(void) {
     process64_reap_zombies();
 
     /*
-     * Deferred GUI terminal repaint.
-     * Terminal writes mark the terminal dirty; the shell flushes that dirty
-     * state once per poll instead of redrawing the terminal window for every
-     * character typed or printed.
+     * The desktop asked to go back to text mode (start menu or Ctrl+T).
+     * The switch happens here because the shell owns the text console.
      */
-    if (gui64_active() && terminal64_take_gui_dirty()) {
-        if (gui64_has_focused_terminal_window()) {
-            gui64_render_focused_terminal_content();
-        } else {
-            gui64_render_terminal_windows();
-        }
+    if (gui64_take_text_mode_request()) {
+        shell64_enter_text_mode();
+        shell64_clear_input();
+        shell64_prompt();
     }
 
     /*
-     * GUI compositor flush is paced internally. Calling this every poll is
-     * okay; it only draws when a repaint is pending and the frame interval has
-     * elapsed.
+     * Repainting is done by the desktop task. This only matters if that
+     * task could not be created.
      */
     if (gui64_active()) {
         gui64_flush_repaint();

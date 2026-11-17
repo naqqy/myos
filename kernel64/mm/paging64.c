@@ -188,77 +188,17 @@ static void paging64_copy_table(nq_u64* dst, const nq_u64* src) {
 
 
 
-static int paging64_clone_user_low_tables(nq_u64* new_pml4) {
-    if (!new_pml4 || !g_pml4) {
-        return 0;
-    }
-
-    /*
-     * User apps currently live below 1 GiB, so clone the low PML4[0]
-     * path before modifying user mappings. This prevents process-specific
-     * user mappings from changing the kernel's shared identity map tables.
-     */
-    nq_u64 old_pml4e = g_pml4[0];
-
-    if (!(old_pml4e & PAGE64_PRESENT)) {
-        return 1;
-    }
-
-    nq_u64 old_pdpt_phys = old_pml4e & PAGE64_ADDR_MASK;
-    nq_u64* old_pdpt = paging64_phys_table_ptr(old_pdpt_phys);
-
-    if (!old_pdpt) {
-        return 0;
-    }
-
-    nq_u64 new_pdpt_phys = paging64_alloc_runtime_table_phys();
-
-    if (!new_pdpt_phys) {
-        return 0;
-    }
-
-    nq_u64* new_pdpt = paging64_phys_table_ptr(new_pdpt_phys);
-    paging64_copy_table(new_pdpt, old_pdpt);
-
-    new_pml4[0] =
-        new_pdpt_phys |
-        (old_pml4e & 0xFFFu);
-
-    /*
-     * Clone PDPT[0] as well; it covers 0..1 GiB where the POC user area
-     * currently resides.
-     */
-    nq_u64 old_pdpte = old_pdpt[0];
-
-    if (old_pdpte & PAGE64_PRESENT) {
-        nq_u64 old_pd_phys = old_pdpte & PAGE64_ADDR_MASK;
-        nq_u64* old_pd = paging64_phys_table_ptr(old_pd_phys);
-
-        if (!old_pd) {
-            pmm64_free_frame(new_pdpt_phys);
-            return 0;
-        }
-
-        nq_u64 new_pd_phys = paging64_alloc_runtime_table_phys();
-
-        if (!new_pd_phys) {
-            pmm64_free_frame(new_pdpt_phys);
-            return 0;
-        }
-
-        nq_u64* new_pd = paging64_phys_table_ptr(new_pd_phys);
-        paging64_copy_table(new_pd, old_pd);
-
-        new_pdpt[0] =
-            new_pd_phys |
-            (old_pdpte & 0xFFFu);
-    }
-
-    return 1;
-}
-
 nq_u64 paging64_create_user_address_space(void) {
     if (!g_pml4 || !g_pml4_phys) {
+        return 0;
+    }
+
+    /*
+     * The user slot must be free in the kernel's own tables, otherwise
+     * processes would share (and free) kernel page tables.
+     */
+    if (g_pml4[VMEM64_USER_PML4_INDEX] & PAGE64_PRESENT) {
+        k64_print("paging64: user PML4 slot is in use by the kernel\n");
         return 0;
     }
 
@@ -276,15 +216,15 @@ nq_u64 paging64_create_user_address_space(void) {
     }
 
     /*
-     * Start with the kernel layout copied in. High/direct-map/kernel entries
-     * stay shared. The low user path is cloned immediately below.
+     * Every kernel entry (identity map, direct map, ...) is shared: the new
+     * PML4 points at the kernel's own lower-level tables, so kernel mappings
+     * stay identical in every process and stay supervisor-only.
+     *
+     * Only the user slot is private. It starts empty and is filled by
+     * paging64_map_user_page().
      */
     paging64_copy_table(pml4, g_pml4);
-
-    if (!paging64_clone_user_low_tables(pml4)) {
-        pmm64_free_frame(pml4_phys);
-        return 0;
-    }
+    pml4[VMEM64_USER_PML4_INDEX] = 0;
 
     return pml4_phys;
 }
@@ -350,7 +290,15 @@ int paging64_map_user_page(
         return 0;
     }
 
-    if (!is_low_canonical(virt)) {
+    /*
+     * User pages may only be created inside the user region. This is what
+     * keeps USER-accessible entries out of the shared kernel tables.
+     */
+    if (!vmem64_is_user(virt)) {
+        return 0;
+    }
+
+    if (pml4_phys == g_pml4_phys) {
         return 0;
     }
 
@@ -396,47 +344,9 @@ int paging64_map_user_page(
     if (pde & PAGE64_PRESENT) {
         if (pde & PAGE64_PS) {
             /*
-             * Replace a cloned low identity 2 MiB page with a private
-             * 4 KiB page table for this user process.
+             * The user slot only ever holds 4 KiB pages created here.
              */
-            pt_phys = paging64_alloc_runtime_table_phys();
-
-            if (!pt_phys) {
-                return 0;
-            }
-
-            pt = paging64_phys_table_ptr(pt_phys);
-
-            if (!pt) {
-                pmm64_free_frame(pt_phys);
-                return 0;
-            }
-
-            /*
-             * Keep the rest of this 2 MiB region identity-mapped for the
-             * kernel (supervisor-only 4 KiB entries). The kernel still uses
-             * identity pointers for firmware-placed data such as the INITRD
-             * and boot info; dropping the whole 2 MiB region would make
-             * those fault inside this process's syscalls if they happen to
-             * share the region. Only the pages the process maps are
-             * replaced below.
-             */
-            nq_u64 identity_base = pde & 0x000FFFFFFFE00000ull;
-            nq_u64 identity_flags =
-                (pde & 0xFFFull & ~(PAGE64_PS | PAGE64_USER)) |
-                (pde & (1ull << 63));
-
-            for (nq_u64 i = 0; i < 512; i++) {
-                pt[i] =
-                    (identity_base + i * PAGE64_SIZE_4K) |
-                    identity_flags;
-            }
-
-            pd[pd_i] =
-                pt_phys |
-                PAGE64_PRESENT |
-                PAGE64_RW |
-                PAGE64_USER;
+            return 0;
         } else {
             pt_phys = pde & PAGE64_ADDR_MASK;
             pt = paging64_phys_table_ptr(pt_phys);
@@ -590,14 +500,18 @@ int paging64_alloc_map_user_range(
     return 1;
 }
 
-static void paging64_free_user_mappings_in_first_gib(nq_u64 pml4_phys) {
+/*
+ * Frees everything under the private user PML4 slot: the user frames, then
+ * the page tables, page directories and the PDPT that map them.
+ */
+static void paging64_free_user_slot(nq_u64 pml4_phys) {
     nq_u64* pml4 = paging64_phys_table_ptr(pml4_phys);
 
     if (!pml4) {
         return;
     }
 
-    nq_u64 pml4e = pml4[0];
+    nq_u64 pml4e = pml4[VMEM64_USER_PML4_INDEX];
 
     if (!(pml4e & PAGE64_PRESENT)) {
         return;
@@ -606,63 +520,52 @@ static void paging64_free_user_mappings_in_first_gib(nq_u64 pml4_phys) {
     nq_u64 pdpt_phys = pml4e & PAGE64_ADDR_MASK;
     nq_u64* pdpt = paging64_phys_table_ptr(pdpt_phys);
 
+    pml4[VMEM64_USER_PML4_INDEX] = 0;
+
     if (!pdpt) {
         return;
     }
 
-    nq_u64 pdpte = pdpt[0];
+    for (nq_u32 pdpt_i = 0; pdpt_i < 512; pdpt_i++) {
+        nq_u64 pdpte = pdpt[pdpt_i];
 
-    if (!(pdpte & PAGE64_PRESENT)) {
-        pmm64_free_frame(pdpt_phys);
-        return;
-    }
-
-    nq_u64 pd_phys = pdpte & PAGE64_ADDR_MASK;
-    nq_u64* pd = paging64_phys_table_ptr(pd_phys);
-
-    if (!pd) {
-        pmm64_free_frame(pdpt_phys);
-        return;
-    }
-
-    nq_u64 start_pd = (VMEM64_USER_BASE >> 21) & 0x1FFull;
-    nq_u64 end_pd = ((VMEM64_USER_LIMIT - 1ull) >> 21) & 0x1FFull;
-
-    for (nq_u64 pd_i = start_pd; pd_i <= end_pd; pd_i++) {
-        nq_u64 pde = pd[pd_i];
-
-        if (!(pde & PAGE64_PRESENT)) {
+        if (!(pdpte & PAGE64_PRESENT) || (pdpte & PAGE64_PS)) {
             continue;
         }
 
-        if (pde & PAGE64_PS) {
-            /*
-             * This is a cloned identity mapping, not a user allocation.
-             */
+        nq_u64 pd_phys = pdpte & PAGE64_ADDR_MASK;
+        nq_u64* pd = paging64_phys_table_ptr(pd_phys);
+
+        if (!pd) {
             continue;
         }
 
-        nq_u64 pt_phys = pde & PAGE64_ADDR_MASK;
-        nq_u64* pt = paging64_phys_table_ptr(pt_phys);
+        for (nq_u32 pd_i = 0; pd_i < 512; pd_i++) {
+            nq_u64 pde = pd[pd_i];
 
-        if (!pt) {
-            continue;
-        }
-
-        for (nq_u32 pt_i = 0; pt_i < 512; pt_i++) {
-            nq_u64 pte = pt[pt_i];
-
-            if ((pte & PAGE64_PRESENT) && (pte & PAGE64_USER)) {
-                pmm64_free_frame(pte & PAGE64_ADDR_MASK);
-                pt[pt_i] = 0;
+            if (!(pde & PAGE64_PRESENT) || (pde & PAGE64_PS)) {
+                continue;
             }
+
+            nq_u64 pt_phys = pde & PAGE64_ADDR_MASK;
+            nq_u64* pt = paging64_phys_table_ptr(pt_phys);
+
+            if (pt) {
+                for (nq_u32 pt_i = 0; pt_i < 512; pt_i++) {
+                    nq_u64 pte = pt[pt_i];
+
+                    if (pte & PAGE64_PRESENT) {
+                        pmm64_free_frame(pte & PAGE64_ADDR_MASK);
+                    }
+                }
+            }
+
+            pmm64_free_frame(pt_phys);
         }
 
-        pmm64_free_frame(pt_phys);
-        pd[pd_i] = 0;
+        pmm64_free_frame(pd_phys);
     }
 
-    pmm64_free_frame(pd_phys);
     pmm64_free_frame(pdpt_phys);
 }
 
@@ -675,7 +578,7 @@ void paging64_destroy_user_address_space(nq_u64 pml4_phys) {
         write_cr3(g_pml4_phys);
     }
 
-    paging64_free_user_mappings_in_first_gib(pml4_phys);
+    paging64_free_user_slot(pml4_phys);
     pmm64_free_frame(pml4_phys);
 }
 
@@ -1014,75 +917,20 @@ static nq_u64* paging64_table_from_entry(nq_u64 entry) {
 }
 
 
-int paging64_mark_user_range(nq_u64 virt_addr, nq_u64 size) {
-    if (!g_pml4 || size == 0) {
-        return 0;
-    }
-
-    nq_u64 start = virt_addr & ~(PAGE64_2M_SIZE - 1ull);
-    nq_u64 end = virt_addr + size;
-
-    if (end < virt_addr) {
-        return 0;
-    }
-
-    end = (end + PAGE64_2M_SIZE - 1ull) & ~(PAGE64_2M_SIZE - 1ull);
-
-    for (nq_u64 addr = start; addr < end; addr += PAGE64_2M_SIZE) {
-        nq_u64 pml4_i = (addr >> 39) & 0x1FFull;
-        nq_u64 pdpt_i = (addr >> 30) & 0x1FFull;
-        nq_u64 pd_i   = (addr >> 21) & 0x1FFull;
-
-        nq_u64* pml4 = g_pml4;
-
-        if (!(pml4[pml4_i] & PAGE64_PRESENT)) {
-            return 0;
-        }
-
-        nq_u64* pdpt = paging64_table_from_entry(pml4[pml4_i]);
-
-        if (!(pdpt[pdpt_i] & PAGE64_PRESENT)) {
-            return 0;
-        }
-
-        nq_u64* pd = paging64_table_from_entry(pdpt[pdpt_i]);
-
-        if (!(pd[pd_i] & PAGE64_PRESENT)) {
-            return 0;
-        }
-
-        if (!(pd[pd_i] & PAGE64_PS)) {
-            return 0;
-        }
-
-        /*
-         * User access requires USER bit on every paging level.
-         */
-        pml4[pml4_i] |= PAGE64_USER;
-        pdpt[pdpt_i] |= PAGE64_USER;
-        pd[pd_i]     |= PAGE64_USER | PAGE64_RW;
-    }
-
-    /*
-     * Flush TLB.
-     */
-    __asm__ volatile (
-        "mov %%cr3, %%rax\n"
-        "mov %%rax, %%cr3\n"
-        :
-        :
-        : "rax", "memory"
-    );
-
-    return 1;
-}
-
 static nq_u64* paging64_table_from_entry_checked(nq_u64 entry) {
     return paging64_phys_table_ptr(entry & PAGE64_ADDR_MASK);
 }
 
 
 static int paging64_user_addr_accessible(nq_u64 addr) {
+    /*
+     * A user pointer must point into the user region. Kernel addresses are
+     * rejected outright, whatever the page tables say.
+     */
+    if (!vmem64_is_user(addr)) {
+        return 0;
+    }
+
     nq_u64 cr3 = read_cr3() & PAGE64_ADDR_MASK;
 
     if (!cr3) {

@@ -15,12 +15,18 @@
 
 #include "../../gui/gui64.h"
 
+#include "../../mm/kmem64.h"
+
 static int g_syscall64_initialized = 0;
 
 #define SYSCALL64_WRITE_CHUNK_SIZE 128u
 
 #define SYSCALL64_MAX_PATH 128
-#define SYSCALL64_FILE_TMP_SIZE 8192u
+/*
+ * Largest file an app may open. The whole file is held in kernel heap
+ * memory while the handle is open.
+ */
+#define SYSCALL64_MAX_FILE_SIZE (64ull * 1024ull * 1024ull)
 
 /*
  * Largest window surface an app may present. The pixels are copied straight
@@ -31,7 +37,6 @@ static int g_syscall64_initialized = 0;
 #define SYSCALL64_WIN_MAX_PIXELS (3840u * 2160u)
 
 static char g_syscall64_path_buf[SYSCALL64_MAX_PATH];
-static nq_u8 g_syscall64_file_tmp[SYSCALL64_FILE_TMP_SIZE];
 
 typedef struct syscall64_gfx_info {
     nq_u32 width;
@@ -346,22 +351,31 @@ void syscall64_handler(syscall64_frame_t* frame) {
             }
 
             nq_u64 size = 0;
+            void* data = 0;
 
             /*
-            * POC existence check. This reads up to tmp size.
-            */
-            if (!vfs64_read_file(
+             * Read the whole file once into a heap buffer owned by the
+             * handle. SYS64_READ then copies out of it at the handle's
+             * offset, so files are not limited to a fixed temp buffer and
+             * are not re-read from the filesystem on every call.
+             */
+            if (!vfs64_read_file_alloc(
                     g_syscall64_path_buf,
-                    g_syscall64_file_tmp,
-                    SYSCALL64_FILE_TMP_SIZE,
+                    SYSCALL64_MAX_FILE_SIZE,
+                    &data,
                     &size)) {
                 frame->rax = syscall64_error(SYS64_EFAULT);
                 break;
             }
 
-            int handle = process64_file_open(g_syscall64_path_buf, size);
+            int handle = process64_file_open(
+                g_syscall64_path_buf,
+                (nq_u8*)data,
+                size
+            );
 
             if (handle < 0) {
+                kfree64(data);
                 frame->rax = syscall64_error(SYS64_EINVAL);
                 break;
             }
@@ -385,56 +399,28 @@ void syscall64_handler(syscall64_frame_t* frame) {
                 break;
             }
 
-            if (max_bytes > SYSCALL64_FILE_TMP_SIZE) {
-                max_bytes = SYSCALL64_FILE_TMP_SIZE;
-            }
-
             process64_file_t* file = process64_file_from_handle(handle);
 
-            if (!file) {
+            if (!file || !file->data) {
                 frame->rax = syscall64_error(SYS64_EINVAL);
                 break;
             }
 
-            nq_u64 file_size = 0;
-
-            if (!vfs64_read_file(
-                    file->path,
-                    g_syscall64_file_tmp,
-                    SYSCALL64_FILE_TMP_SIZE,
-                    &file_size)) {
-                frame->rax = syscall64_error(SYS64_EFAULT);
-                break;
-            }
-
-            if (file->offset >= file_size) {
+            if (file->offset >= file->size) {
                 frame->rax = 0;
                 break;
             }
 
-            nq_u64 available = file_size - file->offset;
+            nq_u64 available = file->size - file->offset;
             nq_u64 to_copy = max_bytes;
 
             if (to_copy > available) {
                 to_copy = available;
             }
 
-            /*
-            * Current POC limitation:
-            * g_syscall64_file_tmp only contains first SYSCALL64_FILE_TMP_SIZE bytes.
-            */
-            if (file->offset + to_copy > SYSCALL64_FILE_TMP_SIZE) {
-                to_copy = SYSCALL64_FILE_TMP_SIZE - file->offset;
-            }
-
-            if (to_copy == 0) {
-                frame->rax = 0;
-                break;
-            }
-
             if (!usercopy64_copy_to_user(
                     user_buf,
-                    g_syscall64_file_tmp + file->offset,
+                    file->data + file->offset,
                     to_copy)) {
                 frame->rax = syscall64_error(SYS64_EFAULT);
                 break;
@@ -483,20 +469,18 @@ void syscall64_handler(syscall64_frame_t* frame) {
                 break;
             }
 
-            nq_u64 size = 0;
+            vfs64_stat_t vst;
 
-            if (!vfs64_read_file(
-                    g_syscall64_path_buf,
-                    g_syscall64_file_tmp,
-                    SYSCALL64_FILE_TMP_SIZE,
-                    &size)) {
+            if (!vfs64_stat(g_syscall64_path_buf, &vst)) {
                 frame->rax = syscall64_error(SYS64_EFAULT);
                 break;
             }
 
             naq_stat_t st;
-            st.size = size;
-            st.type = NAQ_STAT_TYPE_FILE;
+            st.size = vst.size;
+            st.type = vst.type == VFS64_TYPE_DIR ?
+                NAQ_STAT_TYPE_DIR :
+                NAQ_STAT_TYPE_FILE;
             st.reserved = 0;
 
             if (!usercopy64_copy_to_user(user_stat, &st, sizeof(st))) {

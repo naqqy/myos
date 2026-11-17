@@ -254,6 +254,61 @@ void fb64_draw_xrgb32_row(
     }
 }
 
+void fb64_blit_xrgb32(
+    nq_u32 x,
+    nq_u32 y,
+    nq_u32 w,
+    nq_u32 h,
+    const nq_u32* pixels,
+    nq_u32 stride
+) {
+    if (!g_fb_available || !pixels || w == 0 || h == 0) {
+        return;
+    }
+
+    if (x >= g_boot->framebuffer_width ||
+        y >= g_boot->framebuffer_height) {
+        return;
+    }
+
+    if (w > g_boot->framebuffer_width - x) {
+        w = g_boot->framebuffer_width - x;
+    }
+
+    if (h > g_boot->framebuffer_height - y) {
+        h = g_boot->framebuffer_height - y;
+    }
+
+    nq_u32* fb = (nq_u32*)g_boot->framebuffer_base;
+    nq_u64 scanline = g_boot->framebuffer_pixels_per_scanline;
+    int native = g_boot->framebuffer_pixel_format == FB64_PIXEL_FORMAT_BGRX;
+
+    for (nq_u32 row = 0; row < h; row++) {
+        const nq_u32* src = pixels + (nq_u64)row * stride;
+        nq_u32* dst = fb + ((nq_u64)(y + row) * scanline) + x;
+
+        if (native) {
+            nq_u64 count = w;
+
+            __asm__ volatile (
+                "rep movsl"
+                : "+D"(dst), "+S"(src), "+c"(count)
+                :
+                : "memory"
+            );
+        } else {
+            for (nq_u32 i = 0; i < w; i++) {
+                nq_u32 c = src[i];
+
+                dst[i] =
+                    ((c >> 16) & 0xFFu) |
+                    (c & 0x0000FF00u) |
+                    ((c & 0xFFu) << 16);
+            }
+        }
+    }
+}
+
 void fb64_print_summary(void) {
     k64_print("Framebuffer64: ");
 

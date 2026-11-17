@@ -4,6 +4,7 @@
 #include "../k64_console.h"
 #include "../safety/safe_mode64.h"
 #include "../debug/bootlog64.h"
+#include "../mm/kmem64.h"
 
 static int g_vfs_mounted = 0;
 static vfs64_backend_t g_vfs_backend = VFS64_BACKEND_NONE;
@@ -604,8 +605,11 @@ int vfs64_rmdir(const char* path) {
 }
 
 int vfs64_stat(const char* path, vfs64_stat_t* out) {
-    static nq_u8 tmp[1];
+    char normalized[VFS64_MAX_PATH];
+    const char* backend_path = 0;
+    vfs64_backend_t backend;
     nq_u64 size = 0;
+    int is_dir = 0;
 
     if (!out) {
         return 0;
@@ -614,16 +618,105 @@ int vfs64_stat(const char* path, vfs64_stat_t* out) {
     out->size = 0;
     out->type = VFS64_TYPE_UNKNOWN;
 
+    if (!g_vfs_mounted || !path) {
+        return 0;
+    }
+
+    if (!vfs64_normalize_path(path, normalized, sizeof(normalized))) {
+        return 0;
+    }
+
     /*
-     * POC:
-     * Try reading with zero/one byte buffer.
-     * Better later: backend-specific stat.
+     * Ask the backend's directory/index for the size instead of reading the
+     * file, so stat works for files of any size.
      */
-    if (vfs64_read_file(path, tmp, 1, &size)) {
-        out->size = size;
-        out->type = VFS64_TYPE_FILE;
-        return 1;
+    backend = vfs64_pick_backend_for_path(normalized, &backend_path);
+
+    if (backend == VFS64_BACKEND_INITRD) {
+        if (!initrd64_file_size(backend_path, &size)) {
+            return 0;
+        }
+    } else if (backend == VFS64_BACKEND_FAT32) {
+        if (!fat32_64_stat_path(backend_path, &size, &is_dir)) {
+            return 0;
+        }
+    } else {
+        return 0;
+    }
+
+    out->size = size;
+    out->type = is_dir ? VFS64_TYPE_DIR : VFS64_TYPE_FILE;
+
+    return 1;
+}
+
+int vfs64_enum_dir(const char* path, vfs64_enum_cb_t cb, void* ctx) {
+    char normalized[VFS64_MAX_PATH];
+    const char* backend_path = 0;
+    vfs64_backend_t backend;
+
+    if (!g_vfs_mounted || !path || !cb) {
+        return 0;
+    }
+
+    if (!vfs64_normalize_path(path, normalized, sizeof(normalized))) {
+        return 0;
+    }
+
+    backend = vfs64_pick_backend_for_path(normalized, &backend_path);
+
+    if (backend == VFS64_BACKEND_INITRD) {
+        return initrd64_enum_path(backend_path, cb, ctx);
+    }
+
+    if (backend == VFS64_BACKEND_FAT32) {
+        return fat32_64_enum_path(backend_path, cb, ctx);
     }
 
     return 0;
+}
+
+int vfs64_read_file_alloc(
+    const char* path,
+    nq_u64 max_bytes,
+    void** out_buf,
+    nq_u64* out_size
+) {
+    vfs64_stat_t st;
+    nq_u64 size = 0;
+
+    if (!out_buf || !out_size) {
+        return 0;
+    }
+
+    *out_buf = 0;
+    *out_size = 0;
+
+    if (!vfs64_stat(path, &st) || st.type != VFS64_TYPE_FILE) {
+        return 0;
+    }
+
+    if (st.size > max_bytes) {
+        return 0;
+    }
+
+    /*
+     * Zero-length files still get a valid (1 byte) buffer so callers can
+     * treat a non-null pointer as "file is open".
+     */
+    void* buf = kmalloc64(st.size ? st.size : 1);
+
+    if (!buf) {
+        return 0;
+    }
+
+    if (st.size > 0 && !vfs64_read_file(path, buf, st.size, &size)) {
+        kfree64(buf);
+        return 0;
+    }
+
+    *out_buf = buf;
+    *out_size = size;
+
+    return 1;
 }

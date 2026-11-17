@@ -24,6 +24,8 @@
 
 #define PROCESS64_MAX_FILES 16
 
+#define PROCESS64_FPU_STATE_SIZE 512
+
 #define PROCESS64_GFX_NONE   0
 #define PROCESS64_GFX_ACTIVE 1
 
@@ -50,6 +52,12 @@ typedef struct process64_gfx {
 typedef struct process64_file {
     int used;
     char path[128];
+
+    /*
+     * Whole file contents, read once at open time into a kernel heap
+     * buffer. Reads copy out of this; close/reap frees it.
+     */
+    nq_u8* data;
     nq_u64 size;
     nq_u64 offset;
 } process64_file_t;
@@ -83,7 +91,13 @@ typedef enum process64_state {
     PROCESS64_UNUSED = 0,
     PROCESS64_READY,
     PROCESS64_RUNNING,
-    PROCESS64_ZOMBIE
+    PROCESS64_ZOMBIE,
+
+    /*
+     * Waiting for wake_tick. Not picked by the scheduler; the timer tick
+     * moves it back to READY.
+     */
+    PROCESS64_SLEEPING
 } process64_state_t;
 
 typedef struct process64_task {
@@ -91,6 +105,11 @@ typedef struct process64_task {
     process64_state_t state;
 
     nq_u64 rsp;
+
+    /*
+     * Timer tick at which a SLEEPING task becomes READY again.
+     */
+    nq_u64 wake_tick;
 
     nq_u64 stack_base;
     nq_u64 stack_size;
@@ -122,6 +141,13 @@ typedef struct process64_task {
     process64_gfx_t gfx;
 
     process64_user_memory_t user;
+
+    /*
+     * x87/SSE register state (FXSAVE image), saved and restored on every
+     * task switch so apps that use XMM registers cannot corrupt each other.
+     * FXSAVE requires 16-byte alignment.
+     */
+    nq_u8 fpu_state[PROCESS64_FPU_STATE_SIZE] __attribute__((aligned(16)));
 } process64_task_t;
 
 void process64_init(void);
@@ -197,7 +223,7 @@ void process64_reap_zombies(void);
 int process64_reap_pid(nq_u32 pid);
 nq_u32 process64_zombie_count(void);
 
-int process64_file_open(const char* path, nq_u64 size);
+int process64_file_open(const char* path, nq_u8* data, nq_u64 size);
 int process64_file_read(int handle, void* dst, nq_u64 max_bytes);
 int process64_file_close(int handle);
 process64_file_t* process64_file_from_handle(int handle);

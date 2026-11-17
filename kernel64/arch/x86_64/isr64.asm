@@ -8,6 +8,7 @@ global isr64_stub_table
 
 global irq64_stub_0
 global irq64_stub_1
+global irq64_stub_12
 
 section .text
 
@@ -133,6 +134,11 @@ irq64_stub_0:
 
 irq64_stub_1:
     push qword 1
+    jmp irq64_common
+
+; IRQ12: PS/2 mouse (slave PIC, vector 44)
+irq64_stub_12:
+    push qword 12
     jmp irq64_common
 
 irq64_common:

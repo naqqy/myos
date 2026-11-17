@@ -39,7 +39,6 @@ int paging64_alloc_map_user_range(
 nq_u64 paging64_mapped_2m_pages(void);
 nq_u64 paging64_table_pages(void);
 
-int paging64_mark_user_range(nq_u64 virt_addr, nq_u64 size);
 int paging64_user_range_accessible(nq_u64 virt_addr, nq_u64 size);
 
 void paging64_print_summary(void);

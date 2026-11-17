@@ -246,7 +246,7 @@ free user stacks/app memory later with per-process VM
 destroy private terminals later when terminal64_destroy exists
 remove dead tasks from process table safely
 
-47 Add app file read syscalls. // DONE POC
+47 Add app file read syscalls. // DONE
 SYS_OPEN
 SYS_READ
 SYS_CLOSE
@@ -254,6 +254,10 @@ SYS_STAT
 read-only app asset loading
 safe path validation
 per-process file handles
+no 8 KB limit: open reads the whole file once into a per-handle heap buffer (max 64 MiB)
+SYS_STAT asks the filesystem for size/type instead of reading the file
+read_file() helper in the user runtime
+open files are freed on close and when the process is reaped
 
 48 Add process stdout/stderr terminal routing. // DONE POC
 SYS_WRITE goes to process terminal/stdout
@@ -382,38 +386,48 @@ handle keyboard input
 present frames
 prove window syscalls work from user mode
 
-63 Add game window/fullscreen mode. // PARTIAL POC
-allow game to create fullscreen window
-allow game to create bordered window
-toggle fullscreen later
-route keyboard input to game window
-present game frames through compositor or direct fullscreen path
+63 Add game window/fullscreen mode. // PARTIAL
+allow game to create fullscreen window // DONE (covers the taskbar; not exercised by an app yet)
+allow game to create bordered window // DONE
+any window can be maximised; smaller frames are stretched to fit // DONE
+route keyboard and mouse input to game window // DONE
+toggle fullscreen at runtime // TODO
+direct fullscreen path that bypasses the back buffer // TODO
 
-64 Add compositor damage tracking / z-order redraw. // DONE / preemption issue
-Current issues:
-window/taskbar briefly flashes when a GUI app first starts
-desktop/window flickers during app-window create/destroy
-multiple animated GUI apps can draw over one another
-background animated windows can bypass compositor z-order
+64 Add compositor damage tracking / z-order redraw. // DONE (rebuilt)
+kernel64/gui/gui64.c was rewritten from the bottom up:
+every window owns one cached surface (frame + title + content); the frame is only redrawn on title/focus/size change
+apps present straight into the window surface (one copy), frames of a different size are stretched to fit
+damage is a list of screen rectangles; rectangles that touch are merged, distant ones stay separate
+per damaged rectangle: desktop, windows bottom-to-top, taskbar, menu, cursor, then one copy to the screen
+occlusion: a window covering the whole rectangle hides everything below it, which is skipped
+row copies/fills use rep movs/stos; gui64.c, framebuffer64.c and fb_console.c are built with -O2
+measured with 3 animated apps: about 2% of timer ticks land in compositor/syscall critical sections (was about 84%)
+old issues (flashing on app start, windows drawing over each other, z-order bypass) are gone
 
-Likely cause:
-current fast path lets SYS_WIN_PRESENT blit window content directly to the framebuffer
-first-present/create/destroy paths still use full gui64_render()
-taskbar/window redraws are not damage-tracked
-overlapping windows are not redrawn in correct z-order for dirty regions
+65G Windows-style desktop. // DONE
+PS/2 mouse driver (kernel64/input/mouse64.c, IRQ12) and software cursor
+click to focus and raise; drag the title bar to move; drag the corner or right/bottom edge to resize (outline, applied on release)
+working title-bar buttons: minimise, maximise/restore, close; double-click the title bar to maximise
+close asks the app (CLOSE event); an app that ignores it for 2 seconds is ended
+taskbar: one button per window (click to focus / minimise / restore), clock from the CMOS real-time clock
+start menu (NAQ button): every app in /apps, Terminal, Text mode, Restart, Shut down
+desktop icons for the apps in /apps; double-click to launch
+new windows cascade instead of using four fixed slots; up to 16 windows
+the desktop runs in its own kernel task ("desktop" in ps): mouse, keyboard routing, window manager and repaint
+  no longer depend on the shell loop; the shell only receives keys typed into the terminal window
+app API: NAQ_WIN_EVENT_MOUSE (move/press/release, content-relative) and NAQ_WIN_EVENT_RESIZE
+WINEVENTS.ELF demonstrates mouse and resize; 3DTEST.ELF re-renders at the new size
+hotkeys kept: Tab next window, Ctrl+Q close, Ctrl+T text mode, Esc closes the start menu
 
-Fix:
-track dirty rectangles per window
-track screen-space damage rectangles
-when a window presents:
-  - mark its content dirty
-  - convert window dirty rect to screen-space damage rect
-  - redraw desktop/background under damaged area
-  - redraw all windows overlapping damaged area in z-order
-  - redraw taskbar only if damaged area intersects taskbar
-avoid full taskbar redraw on app create/destroy when possible
-defer taskbar/window-list update until first real present if needed
-optionally add small compositor backbuffer or per-window restore buffer later
+Desktop follow-ups. // TODO
+resize from the left/top edges; live (non-outline) resize
+Alt+Tab style switcher, keyboard navigation in the start menu
+terminal windows for spawned apps (their private terminals are only reachable with view <pid>)
+right-click context menus; drag desktop icons; wallpaper image
+window snapping to screen edges
+USB mouse (needs xHCI); scroll wheel
+blocking event wait for apps instead of polling every frame
 
 GUI THEME TODO:
 Frutiger Aero-inspired theme // DONE
@@ -439,24 +453,30 @@ depth buffer
 flat shading
 keyboard controls
 
-65 Add 3D model format/tooling. // HIGH PRIORITY TODO
-choose simple custom model format first
-build-time OBJ → NMODEL converter
-support vertices and indices
-support normals
-support UVs later
+65 Add 3D model format/tooling. // DONE
+NMODEL v1 format (documented in tools/make_nmodel.py)
+build-time OBJ → NMODEL converter: tools/make_nmodel.py, run by build.sh for assets/game/*.obj
+vertices, 16-bit indices, per-triangle colours (from .mtl Kd or a default palette)
+texture coordinates (UVs)
+auto-centre and scale to unit size, Z flipped to the renderer's left-handed space
+normals: not stored; the renderer computes face normals for flat shading
+vertex normals / smooth shading later
 
-66 Add model loading support for user apps. // HIGH PRIORITY TODO
-read NMODEL from /assets/game/
-parse model header safely
-load vertices/indices into app memory
-render loaded model in test app
+66 Add model loading support for user apps. // DONE
+read NMODEL from /assets/game/ (r3d_model_load / r3d_model_parse in render3d)
+header, block sizes and every index validated against the file size
+parsed in place from an app-owned buffer (no malloc needed)
+3DTEST.ELF is now a model viewer: crate.nm, torus.nm, built-in cube (M cycles)
+renderer limit: 1024 vertices per mesh
 
-67 Add texture support for software renderer. // HIGH PRIORITY TODO
-load NIMG textures from assets
-nearest-neighbor texture sampling first
-perspective-correct texture mapping later
-basic material support
+67 Add texture support for software renderer. // DONE
+load NIMG textures from assets (r3d_texture_load / r3d_texture_parse)
+nearest-neighbor texture sampling, wrapping
+perspective-correct textured triangles (r3d_draw_triangle_textured)
+one texture per mesh; untextured meshes use per-triangle colours
+Wolf3D walls textured with /assets/game/wall.ni, tinted per wall type
+fixed: built-in cube was wound inside-out for back-face culling
+multiple materials per mesh / bilinear filtering later
 
 68 Add visually appealing 3D demo/game. // HIGH PRIORITY TODO
 real 3D models, not ASCII
@@ -481,37 +501,41 @@ MEMORY AND ISOLATION PATH
 Goal: make user apps safer and allow multiple apps without collisions.
 ============================================================
 
-70 Add stronger user memory model. // HIGH PRIORITY TODO
-separate user virtual range
-real user stack allocation/mapping
-remove user access from kernel pages
-track app-owned memory regions
+70 Add stronger user memory model. // DONE
+separate user virtual range: PML4 slot 1, 0x8000000000 - 0x8040000000 (VMEM64_USER_BASE)
+apps linked there with -fpie (userapps/userapp.ld)
+real user stack allocation/mapping (1 MiB at the top of the range)
+kernel pages are never user-accessible: USER entries only exist under the private user slot
+old "usertest" that marked kernel pages user-accessible removed (command now runs the crash app)
+app-owned memory is exactly the private user slot
 
-71 Add per-process user memory ownership. // HIGH PRIORITY TODO
-track allocated user pages per process
-free pages on SYS_EXIT
-prevent app memory overlap
-prepare for multiple apps at once
+71 Add per-process user memory ownership. // DONE
+user pages are owned through the process's private page tables
+frames, page tables and the PML4 are freed when the process is reaped
+apps cannot overlap: each has its own address space
+multiple apps run at once (tested: 3 GUI apps side by side)
 
-72 Add per-process page tables. // HIGH PRIORITY TODO
-separate app address spaces
-map kernel supervisor-only
-map app code/data/user stack per process
-switch CR3 during context switch
+72 Add per-process page tables. // DONE
+separate app address spaces (own PML4 per process)
+kernel entries shared from the kernel PML4 and supervisor-only
+app code/data/user stack mapped per process with 4 KiB pages
+CR3 switched during context switch
 
-73 Improve ELF64 loader memory model. // HIGH PRIORITY TODO
-load multiple apps without overwriting fixed region
-allocate/map app memory per process
-map PT_LOAD segments with correct permissions
-free app memory on exit
-support argv/envp later
+73 Improve ELF64 loader memory model. // MOSTLY DONE
+load multiple apps without overwriting fixed region // DONE
+allocate/map app memory per process // DONE
+free app memory on exit // DONE
+file buffer sized to the ELF file, on the kernel heap // DONE
+run/spawn accept bare names: tries <name>, <name>.ELF, /apps/<name>, /apps/<name>.ELF // DONE
+map PT_LOAD segments with correct permissions // TODO: all user pages are still RW (no read-only text, no NX)
+support argv/envp later // TODO
 
-74 Remove broad low identity mapping. // TODO
-only keep required low mappings temporarily
-use direct map for physical memory access
-map user pages explicitly
-map framebuffer explicitly
-improve kernel/user isolation
+74 Remove broad low identity mapping. // PARTIAL
+map user pages explicitly // DONE (user space no longer overlaps the identity map)
+improve kernel/user isolation // DONE (see 70)
+only keep required low mappings temporarily // TODO: kernel image still runs from the 1 MiB identity map
+use direct map for physical memory access // TODO: INITRD, boot info and framebuffer still use identity pointers
+map framebuffer explicitly // TODO
 
 75 Improve page-table allocation to use PMM-backed pages after mappings are stable. // TODO
 stop relying on identity pointers for page tables
@@ -525,26 +549,29 @@ avoid reclaiming kernel/initrd/stack/memory-map/framebuffer/page tables
 return safe frames to PMM
 print reclaimed bytes
 
-77 Move large static buffers to kmalloc64. // TODO
-shell file buffer
-shell image buffer
-terminal session buffers
-ELF load buffer
-FAT buffers if needed
+77 Move large static buffers to kmalloc64. // PARTIAL
+ELF load buffer // DONE
+syscall window-present temp (33 MiB) removed: presents copy straight from user memory // DONE
+syscall file temp removed: per-handle heap buffers // DONE
+kernel64/linker.ld asserts the kernel stays inside the 4 MiB the UEFI loader reserves // DONE
+shell file buffer // TODO
+shell image buffer (1 MiB) // TODO
+terminal session buffers // TODO
+FAT buffers if needed // TODO
 
-78 Flesh out usermode64 POC. // TODO
-stop marking kernel pages user-accessible
-move test user code into real user pages
-create real user stacks from mapped pages
-validate CPL3 exceptions return through TSS/RSP0
-separate kernel/user memory permissions
+78 Flesh out usermode64 POC. // DONE
+stop marking kernel pages user-accessible (POC test code removed)
+user code only runs from ELF apps in real user pages
+real user stacks from mapped pages
+CPL3 exceptions arrive through TSS/RSP0 and kill only the app (run crash)
+separate kernel/user memory permissions (see 70)
 
-79 Flesh out usercopy64 POC. // TODO
-check writable pages separately from readable pages
-copy fault recovery instead of precheck-only
-support crossing page boundaries safely
-reject kernel pointers from user mode
-integrate with per-process page tables
+79 Flesh out usercopy64 POC. // PARTIAL
+reject kernel pointers from user mode // DONE (pointer must lie in the user range)
+support crossing page boundaries safely // DONE (every page of the range is checked)
+integrate with per-process page tables // DONE (checks walk the current process's tables)
+check writable pages separately from readable pages // TODO (all user pages are RW today)
+copy fault recovery instead of precheck-only // TODO
 
 
 ============================================================
@@ -565,10 +592,12 @@ update FSInfo free cluster count if used
 add timestamps later
 add LFN creation later
 
-82 Add proper VFS directory entry API. // TODO
-vfs64_dirent_t
-backend-independent ls
-cleaner LFN handling
+82 Add proper VFS directory entry API. // PARTIAL
+vfs64_enum_dir(path, callback): backend-independent directory enumeration (INITRD and FAT32) // DONE
+vfs64_stat reports size and file/directory type from the backend // DONE
+vfs64_dirent_t // TODO
+backend-independent ls (ls still prints through each backend) // TODO
+cleaner LFN handling // TODO
 
 83 Flesh out VFS POC. // TODO
 backend-independent vfs64_dirent_t
@@ -589,17 +618,20 @@ PROCESS/SCHEDULER HARDENING
 Goal: make multitasking more correct after apps are useful.
 ============================================================
 
-85 Flesh out scheduler/process64 POC. // TODO
-real task cleanup/reaping
-free task stacks
-task sleep/block states
-safe console locking across tasks
-timer-preempt-safe scheduler path
-per-task terminal/session pointer
-per-task kernel stack ownership
+85 Flesh out scheduler/process64 POC. // MOSTLY DONE
+real task cleanup/reaping // DONE
+free task stacks // DONE
+task sleep state: SYS_SLEEP parks the task (SLEEP in ps), timer tick wakes and schedules it // DONE
+timer-preempt-safe scheduler path (yield/sleep switch with interrupts off) // DONE
+kernel heap, task creation and reaping take the preemption guard // DONE
+x87/SSE state saved per task (FXSAVE); user apps built with -O2 // DONE
+per-task terminal/session pointer // DONE
+per-task kernel stack ownership // DONE
+blocking wait states for input/events (apps still poll) // TODO
+safe console locking across tasks // TODO
 
-86 Improve process terminal support. // TODO
-private terminal cleanup/reaping
+86 Improve process terminal support. // PARTIAL
+private terminal cleanup/reaping // DONE (freed when the process is reaped)
 foreground process receives keyboard input
 shell hotkey to reclaim foreground
 terminal scrollback controls
@@ -611,11 +643,13 @@ test page-fault IST
 test user-mode page fault handling
 test kernel-mode page fault panic path
 
-88 Add user fault recovery. // TODO
+88 Add user fault recovery. // DONE
 user app page fault kills app, not whole kernel
-invalid opcode in user app kills app
-print fault into process terminal
+any CPU exception raised from ring 3 kills only that process
+fault is printed (pid, exception, rip, error code, cr2)
 return to shell safely
+test app: run crash (userapps/crash.c writes through a null pointer)
+kernel-mode faults still halt with the full register dump
 
 
 ============================================================
@@ -642,17 +676,24 @@ REAL HARDWARE DEVICE SUPPORT
 Goal: broaden hardware support after safe software-rendered game works.
 ============================================================
 
+PS/2 keyboard handoff fix. // DONE
+drain the 8042 output buffer at boot (key released after the loader prompt could kill input)
+keyboard IRQ only reads when a byte is waiting
+timer safety net recovers a missed keyboard IRQ
+
 93 Add USB HID keyboard support. // TODO
 xHCI discovery later if needed
 start with firmware/legacy keyboard fallback detection
 eventually support wired USB keyboards reliably
 support keyboard input on more real laptops/desktops
 
-94 Add PS/2 mouse or USB mouse support. // TODO
-PS/2 mouse if available
-USB HID mouse later
-app mouse input syscalls
-camera/look support for 3D game
+94 Add PS/2 mouse or USB mouse support. // PARTIAL
+PS/2 mouse if available // DONE (3-byte packets, 3 buttons, no wheel)
+absolute pointer in VMs (VMware-style vmmouse backdoor; QEMU, VMware, VirtualBox) // DONE
+  the guest cursor follows the host pointer exactly, no mouse grab needed; real hardware falls back to PS/2
+app mouse input: NAQ_WIN_EVENT_MOUSE through SYS_WIN_GET_EVENT // DONE
+USB HID mouse later // TODO
+camera/look support for 3D game // TODO (needs relative/captured mouse mode)
 
 95 Add AHCI/SATA backend under block64. // TODO
 
@@ -698,6 +739,23 @@ shared libc later if needed
 single-core is enough for now
 AP startup later
 scheduler SMP later
+
+============================================================
+BUILD / TOOLING
+============================================================
+
+Build on Windows through WSL Ubuntu. // DONE
+./build.sh uefi works with gnu-efi 4.x (GNU_EFI_USE_MS_ABI, objcopy --output-target)
+packages: build-essential nasm python3 python3-pil dosfstools mtools gnu-efi qemu-system-x86 ovmf
+
+Headless boot test driver. // DONE
+tools/qemu_drive.py boots build/uefi.img without a window, types commands, saves screenshots
+
+Stop tracking build outputs in git. // DONE
+build/ is in .gitignore; .gitattributes keeps *.sh, *.py, *.ld on LF line endings
+
+Game assets on both filesystems. // DONE
+/assets/game is packed into INITRD.NAQ and copied onto the FAT32 image
 
 Later: add minimal ACPI64 support. // TODO
 find RSDP from UEFI configuration table

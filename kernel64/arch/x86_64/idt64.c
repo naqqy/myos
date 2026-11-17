@@ -33,6 +33,7 @@ static idt64_ptr_t idt64_ptr;
 
 extern void irq64_stub_0(void);
 extern void irq64_stub_1(void);
+extern void irq64_stub_12(void);
 
 extern void syscall64_stub(void);
 
@@ -117,6 +118,17 @@ void idt64_install_irq_gates(void) {
     idt64_set_gate(
         33,
         (nq_u64)irq64_stub_1,
+        GDT64_KERNEL_CODE,
+        0,
+        IDT_TYPE_INTERRUPT_GATE
+    );
+
+    /*
+     * IRQ12 (PS/2 mouse) arrives through the slave PIC at vector 0x28 + 4.
+     */
+    idt64_set_gate(
+        44,
+        (nq_u64)irq64_stub_12,
         GDT64_KERNEL_CODE,
         0,
         IDT_TYPE_INTERRUPT_GATE

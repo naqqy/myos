@@ -183,6 +183,9 @@ KERNEL64_IRQ_OBJ="$BUILD_DIR/irq64.o"
 KERNEL64_INPUT_C="$KERNEL64_DIR/input/kinput64.c"
 KERNEL64_INPUT_OBJ="$BUILD_DIR/kinput64.o"
 
+KERNEL64_MOUSE_C="$KERNEL64_DIR/input/mouse64.c"
+KERNEL64_MOUSE_OBJ="$BUILD_DIR/mouse64.o"
+
 KERNEL64_POWER_C="$KERNEL64_DIR/arch/x86_64/power64.c"
 KERNEL64_POWER_OBJ="$BUILD_DIR/power64.o"
 
@@ -257,6 +260,7 @@ KERNEL64_USBKBD_OBJ="$BUILD_DIR/usbkbd64.o"
 ASSETS_FS_DIR="${ASSETS_FS_DIR:-assets/fs}"
 ASSETS_BUILD_DIR="$BUILD_DIR/assets_fs"
 NIMG_TOOL="${NIMG_TOOL:-tools/make_nimg.py}"
+NMODEL_TOOL="${NMODEL_TOOL:-tools/make_nmodel.py}"
 
 COPY_ASSETS_TO_UEFI="${COPY_ASSETS_TO_UEFI:-0}"
 
@@ -266,6 +270,10 @@ SPLASH_NIMG_HEIGHT="${SPLASH_NIMG_HEIGHT:-384}"
 USERAPPS_DIR="${USERAPPS_DIR:-userapps}"
 USERAPPS_BUILD_DIR="$BUILD_DIR/userapps"
 USERAPP_LINKER="$USERAPPS_DIR/userapp.ld"
+
+# Optimisation level for user apps and their runtime. -O2 lets GCC use SSE
+# registers; the kernel saves them per task (process64 fpu_state).
+USERAPP_OPT="${USERAPP_OPT:--O2}"
 
 INITRD_TOOL="${INITRD_TOOL:-tools/make_initrd.py}"
 INITRD_IMG="$BUILD_DIR/INITRD.NAQ"
@@ -755,9 +763,12 @@ build_kernel64() {
   assemble64 "Building 64-bit GDT assembly" "$KERNEL64_GDT_ASM" "$KERNEL64_GDT_ASM_OBJ"
   compile64_c "Compiling 64-bit GDT/TSS" "$KERNEL64_GDT_C" "$KERNEL64_GDT_OBJ"
 
-  compile64_c "Compiling 64-bit framebuffer console" "$KERNEL64_CONSOLE_C" "$KERNEL64_CONSOLE_OBJ"
+  # The compositor, framebuffer and terminal renderer move a lot of pixels,
+  # so they are built with optimisation; the rest of the kernel stays -O0.
+  compile64_c "Compiling 64-bit framebuffer console" "$KERNEL64_CONSOLE_C" "$KERNEL64_CONSOLE_OBJ" -O2
   compile64_c "Compiling 64-bit IRQ/PIC/PIT/keyboard" "$KERNEL64_IRQ_C" "$KERNEL64_IRQ_OBJ"
   compile64_c "Compiling 64-bit keyboard input queue" "$KERNEL64_INPUT_C" "$KERNEL64_INPUT_OBJ"
+  compile64_c "Compiling 64-bit PS/2 mouse" "$KERNEL64_MOUSE_C" "$KERNEL64_MOUSE_OBJ"
   compile64_c "Compiling 64-bit power controls" "$KERNEL64_POWER_C" "$KERNEL64_POWER_OBJ"
   compile64_c "Compiling 64-bit timer" "$KERNEL64_TIMER_C" "$KERNEL64_TIMER_OBJ"
 
@@ -774,7 +785,7 @@ build_kernel64() {
   compile64_c "Compiling 64-bit VFS" "$KERNEL64_VFS_C" "$KERNEL64_VFS_OBJ"
   compile64_c "Compiling 64-bit initrd filesystem" "$KERNEL64_INITRD_C" "$KERNEL64_INITRD_OBJ"
 
-  compile64_c "Compiling 64-bit framebuffer graphics" "$KERNEL64_FB64_C" "$KERNEL64_FB64_OBJ"
+  compile64_c "Compiling 64-bit framebuffer graphics" "$KERNEL64_FB64_C" "$KERNEL64_FB64_OBJ" -O2
   compile64_c "Compiling 64-bit image/NIMG loader" "$KERNEL64_IMAGE_C" "$KERNEL64_IMAGE_OBJ"
 
   assemble64 "Assembling 64-bit context switch" "$KERNEL64_CONTEXT_SWITCH_ASM" "$KERNEL64_CONTEXT_SWITCH_OBJ"
@@ -791,7 +802,7 @@ build_kernel64() {
 
   compile64_c "Compiling 64-bit shell" "$KERNEL64_SHELL_C" "$KERNEL64_SHELL_OBJ"
 
-  compile64_c "Compiling 64-bit GUI compositor" "$KERNEL64_GUI_C" "$KERNEL64_GUI_OBJ"
+  compile64_c "Compiling 64-bit GUI compositor" "$KERNEL64_GUI_C" "$KERNEL64_GUI_OBJ" -O2
 
   compile64_c "Compiling 64-bit PCI scanner" "$KERNEL64_PCI_C" "$KERNEL64_PCI_OBJ"
   compile64_c "Compiling 64-bit xHCI probe" "$KERNEL64_XHCI_C" "$KERNEL64_XHCI_OBJ"
@@ -823,6 +834,7 @@ build_kernel64() {
     "$KERNEL64_CONSOLE_OBJ" \
     "$KERNEL64_IRQ_OBJ" \
     "$KERNEL64_INPUT_OBJ" \
+    "$KERNEL64_MOUSE_OBJ" \
     "$KERNEL64_POWER_OBJ" \
     "$KERNEL64_TIMER_OBJ" \
     "$KERNEL64_SAFE_MODE_OBJ" \
@@ -897,6 +909,16 @@ build_game_assets() {
 
       msg "Converting game asset $file -> $out"
       "$PYTHON3" "$NIMG_TOOL" "$file" "$out"
+    elif [[ "$lower_ext" == "obj" ]]; then
+      # Wavefront OBJ -> NMODEL (.nm), loaded by userapps/runtime/render3d.c
+      out="$dst_dir/${rel%.*}.nm"
+      mkdir -p "$(dirname "$out")"
+
+      msg "Converting game model $file -> $out"
+      "$PYTHON3" "$NMODEL_TOOL" "$file" "$out"
+    elif [[ "$lower_ext" == "mtl" ]]; then
+      # Material libraries are only read by the model converter.
+      continue
     else
       out="$dst_dir/$rel"
       mkdir -p "$(dirname "$out")"
@@ -922,98 +944,54 @@ build_userapps() {
     return 1
   fi
 
-  local runtime_crt0="$USERAPPS_DIR/runtime/crt0.S"
-  local runtime_syscall="$USERAPPS_DIR/runtime/syscall.c"
-  local runtime_string="$USERAPPS_DIR/runtime/string.c"
-  local runtime_time="$USERAPPS_DIR/runtime/time.c"
-  local runtime_gfx="$USERAPPS_DIR/runtime/gfx.c"
-  local runtime_render3d="$USERAPPS_DIR/runtime/render3d.c"
+  # Flags shared by the runtime and every C app.
+  #
+  # -fpie: apps are linked at VMEM64_USER_BASE (512 GiB), far above the
+  #   2 GiB reach of absolute 32-bit addresses, so all code and data
+  #   references must be RIP-relative. The link itself is still a normal
+  #   fixed-address static executable.
+  # -fno-tree-loop-distribute-patterns: stops GCC turning the runtime's own
+  #   memset/memcpy loops into calls to memset/memcpy (infinite recursion).
+  local user_cflags=(
+    -m64
+    -I"$USERAPPS_DIR/include"
+    -ffreestanding
+    -fpie
+    -fno-stack-protector
+    -fno-tree-loop-distribute-patterns
+    -mno-red-zone
+    -nostdlib
+    "$USERAPP_OPT"
+  )
 
+  # Runtime objects linked into every C app, in link order after the app.
+  local runtime_sources=(
+    "$USERAPPS_DIR/runtime/syscall.c"
+    "$USERAPPS_DIR/runtime/string.c"
+    "$USERAPPS_DIR/runtime/time.c"
+    "$USERAPPS_DIR/runtime/gfx.c"
+    "$USERAPPS_DIR/runtime/render3d.c"
+  )
+
+  local runtime_crt0="$USERAPPS_DIR/runtime/crt0.S"
   local runtime_crt0_obj="$USERAPPS_BUILD_DIR/runtime_crt0.o"
-  local runtime_syscall_obj="$USERAPPS_BUILD_DIR/runtime_syscall.o"
-  local runtime_string_obj="$USERAPPS_BUILD_DIR/runtime_string.o"
-  local runtime_time_obj="$USERAPPS_BUILD_DIR/runtime_time.o"
-  local runtime_gfx_obj="$USERAPPS_BUILD_DIR/runtime_gfx.o"
-  local runtime_render3d_obj="$USERAPPS_BUILD_DIR/runtime_render3d.o"
+  local runtime_objs=()
 
   if [[ -f "$runtime_crt0" ]]; then
-    "$GCC" \
-      -m64 \
-      -I"$USERAPPS_DIR/include" \
-      -ffreestanding \
-      -fno-pie \
-      -fno-stack-protector \
-      -mno-red-zone \
-      -nostdlib \
-      -c "$runtime_crt0" \
-      -o "$runtime_crt0_obj"
+    "$GCC" "${user_cflags[@]}" -c "$runtime_crt0" -o "$runtime_crt0_obj"
   fi
 
-  if [[ -f "$runtime_syscall" ]]; then
-    "$GCC" \
-      -m64 \
-      -I"$USERAPPS_DIR/include" \
-      -ffreestanding \
-      -fno-pie \
-      -fno-stack-protector \
-      -mno-red-zone \
-      -nostdlib \
-      -c "$runtime_syscall" \
-      -o "$runtime_syscall_obj"
-  fi
+  local runtime_src
 
-  if [[ -f "$runtime_string" ]]; then
-    "$GCC" \
-      -m64 \
-      -I"$USERAPPS_DIR/include" \
-      -ffreestanding \
-      -fno-pie \
-      -fno-stack-protector \
-      -mno-red-zone \
-      -nostdlib \
-      -c "$runtime_string" \
-      -o "$runtime_string_obj"
-  fi
+  for runtime_src in "${runtime_sources[@]}"; do
+    [[ -f "$runtime_src" ]] || continue
 
-  if [[ -f "$runtime_time" ]]; then
-    "$GCC" \
-      -m64 \
-      -I"$USERAPPS_DIR/include" \
-      -ffreestanding \
-      -fno-pie \
-      -fno-stack-protector \
-      -mno-red-zone \
-      -nostdlib \
-      -c "$runtime_time" \
-      -o "$runtime_time_obj"
-  fi
+    local runtime_obj
+    runtime_obj="$USERAPPS_BUILD_DIR/runtime_$(basename "$runtime_src" .c).o"
 
-  if [[ -f "$runtime_gfx" ]]; then
-    "$GCC" \
-      -m64 \
-      -I"$USERAPPS_DIR/include" \
-      -ffreestanding \
-      -fno-pie \
-      -fno-stack-protector \
-      -mno-red-zone \
-      -nostdlib \
-      -c "$runtime_gfx" \
-      -o "$runtime_gfx_obj"
-  fi
-
-
-  if [[ -f "$runtime_render3d" ]]; then
-    "$GCC" \
-      -m64 \
-      -I"$USERAPPS_DIR/include" \
-      -ffreestanding \
-      -fno-pie \
-      -fno-stack-protector \
-      -mno-red-zone \
-      -nostdlib \
-      -c "$runtime_render3d" \
-      -o "$runtime_render3d_obj"
-  fi
+    "$GCC" "${user_cflags[@]}" -c "$runtime_src" -o "$runtime_obj"
+    runtime_objs+=("$runtime_obj")
+  done
 
   local found=0
 
@@ -1062,16 +1040,7 @@ build_userapps() {
 
     msg "Compiling C user app $name_upper"
 
-    "$GCC" \
-      -m64 \
-      -I"$USERAPPS_DIR/include" \
-      -ffreestanding \
-      -fno-pie \
-      -fno-stack-protector \
-      -mno-red-zone \
-      -nostdlib \
-      -c "$src" \
-      -o "$obj"
+    "$GCC" "${user_cflags[@]}" -c "$src" -o "$obj"
 
     msg "Linking C user app $name_upper.ELF"
 
@@ -1083,11 +1052,7 @@ build_userapps() {
       -o "$out" \
       "$runtime_crt0_obj" \
       "$obj" \
-      "$runtime_syscall_obj" \
-      "$runtime_string_obj" \
-      "$runtime_time_obj" \
-      "$runtime_gfx_obj" \
-      "$runtime_render3d_obj"
+      "${runtime_objs[@]}"
 
     "$OBJCOPY" --strip-debug "$out" "$out"
   done < <(find "$USERAPPS_DIR" -maxdepth 1 -type f -name '*.c' -print0)
@@ -1115,7 +1080,9 @@ mtools_mkdir_p() {
     [[ -z "$part" ]] && continue
 
     current="$current/$part"
-    "$MMD" -i "$img" "::$current" 2>/dev/null || true
+    # -D s: if the directory already exists, skip it instead of prompting
+    # (mmd otherwise waits for an answer on the terminal and hangs the build).
+    "$MMD" -D s -i "$img" "::$current" </dev/null 2>/dev/null || true
   done
 }
 
@@ -1346,6 +1313,20 @@ build_uefi_image() {
     while IFS= read -r -d '' app; do
       "$MCOPY" -o -i "$UEFI_IMG" "$app" "::/apps/$(basename "$app")"
     done < <(find "$USERAPPS_BUILD_DIR" -maxdepth 1 -type f -name '*.ELF' -print0)
+  fi
+
+  # Game assets (textures, models) also go on the FAT image so apps find
+  # /assets/game/... when the root filesystem is FAT32 (NAQ_SAFE_HW_DEFAULT=0)
+  # and not only when it is the INITRD.
+  if [[ -d "$INITRD_FS_DIR/assets/game" ]]; then
+    mtools_mkdir_p "$UEFI_IMG" "assets/game"
+
+    while IFS= read -r -d '' asset; do
+      local asset_rel="${asset#$INITRD_FS_DIR/}"
+
+      mtools_mkdir_p "$UEFI_IMG" "$(dirname "$asset_rel")"
+      "$MCOPY" -o -i "$UEFI_IMG" "$asset" "::/$asset_rel"
+    done < <(find "$INITRD_FS_DIR/assets/game" -type f -print0)
   fi
 
   if [[ "${COPY_ASSETS_TO_UEFI:-0}" == "1" ]]; then

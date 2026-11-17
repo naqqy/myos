@@ -13,6 +13,12 @@
 #include "../gui/gui64.h"
 
 static process64_task_t g_tasks[PROCESS64_MAX_TASKS];
+
+/*
+ * Clean FXSAVE image copied into every new task.
+ */
+static nq_u8 g_fpu_template[PROCESS64_FPU_STATE_SIZE]
+    __attribute__((aligned(16)));
 static process64_task_t* g_current = 0;
 static nq_u32 g_next_pid = 1;
 
@@ -75,6 +81,40 @@ static void str_copy64(char* dst, const char* src, nq_u64 dst_size) {
     dst[i] = 0;
 }
 
+/*
+ * Enables x87/SSE and captures a clean register image.
+ *
+ * The kernel itself is built with -mgeneral-regs-only and never touches
+ * these registers, so saving/restoring them at task switch is enough to
+ * give every user program its own copy.
+ */
+static void process64_fpu_init(void) {
+    nq_u64 cr0;
+    nq_u64 cr4;
+
+    __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~(1ull << 2);  /* EM: no x87 emulation */
+    cr0 &= ~(1ull << 3);  /* TS: no lazy-switch trap */
+    cr0 |=  (1ull << 1);  /* MP */
+    __asm__ volatile ("mov %0, %%cr0" : : "r"(cr0));
+
+    __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1ull << 9);   /* OSFXSR: FXSAVE/FXRSTOR and SSE enabled */
+    cr4 |= (1ull << 10);  /* OSXMMEXCPT */
+    __asm__ volatile ("mov %0, %%cr4" : : "r"(cr4));
+
+    __asm__ volatile ("fninit");
+    __asm__ volatile ("fxsave64 (%0)" : : "r"(g_fpu_template) : "memory");
+
+    /*
+     * MXCSR default: all SSE exceptions masked, round to nearest.
+     */
+    g_fpu_template[24] = 0x80;
+    g_fpu_template[25] = 0x1F;
+    g_fpu_template[26] = 0x00;
+    g_fpu_template[27] = 0x00;
+}
+
 static const char* process64_state_name(process64_state_t state) {
     switch (state) {
         case PROCESS64_UNUSED:
@@ -88,6 +128,9 @@ static const char* process64_state_name(process64_state_t state) {
 
         case PROCESS64_ZOMBIE:
             return "ZOMBIE";
+
+        case PROCESS64_SLEEPING:
+            return "SLEEP";
 
         default:
             return "UNKNOWN";
@@ -329,6 +372,9 @@ static nq_u64 process64_build_initial_stack(nq_u64 stack_base, nq_u64 stack_size
 void process64_init(void) {
     mem_zero64(g_tasks, sizeof(g_tasks));
 
+    process64_fpu_init();
+    mem_copy64(g_tasks[0].fpu_state, g_fpu_template, sizeof(g_fpu_template));
+
     g_tasks[0].pid = 0;
     g_tasks[0].state = PROCESS64_RUNNING;
     g_tasks[0].rsp = 0;
@@ -483,6 +529,8 @@ static int process64_create_kernel_task_locked(
 
     mem_zero64(task, sizeof(*task));
 
+    mem_copy64(task->fpu_state, g_fpu_template, sizeof(g_fpu_template));
+
     task->pid = g_next_pid++;
     task->state = PROCESS64_READY;
     task->stack_base = (nq_u64)stack;
@@ -587,6 +635,12 @@ static void process64_switch_to(process64_task_t* next) {
     if (next->stack_base && next->stack_size) {
         gdt64_set_rsp0(next->stack_base + next->stack_size);
     }
+
+    /*
+     * Swap x87/SSE register state along with the stack.
+     */
+    __asm__ volatile ("fxsave64 (%0)" : : "r"(prev->fpu_state) : "memory");
+    __asm__ volatile ("fxrstor64 (%0)" : : "r"(next->fpu_state) : "memory");
 
     context_switch64(&prev->rsp, next->rsp);
 }
@@ -741,6 +795,21 @@ void process64_on_timer_tick(void) {
     }
 
     /*
+     * Wake sleepers whose time has come. This only flips a state flag, so
+     * it is safe even while a critical section holds the preemption guard.
+     */
+    int woke_task = 0;
+    nq_u64 now = timer64_get_ticks();
+
+    for (nq_u32 i = 0; i < PROCESS64_MAX_TASKS; i++) {
+        if (g_tasks[i].state == PROCESS64_SLEEPING &&
+            now >= g_tasks[i].wake_tick) {
+            g_tasks[i].state = PROCESS64_READY;
+            woke_task = 1;
+        }
+    }
+
+    /*
      * Critical stability rule:
      *
      * Do not switch tasks while kernel/syscall/GUI code is inside a guarded
@@ -769,7 +838,13 @@ void process64_on_timer_tick(void) {
 
     g_scheduler_ticks++;
 
-    if (g_scheduler_ticks < g_quantum_ticks) {
+    /*
+     * A task that just finished sleeping runs right away instead of waiting
+     * for the current task's quantum to expire. That keeps sleep-paced apps
+     * (frame timers) on time; a task that sleeps gives up the CPU, so this
+     * cannot starve the others.
+     */
+    if (!woke_task && g_scheduler_ticks < g_quantum_ticks) {
         return;
     }
 
@@ -923,15 +998,33 @@ void process64_sleep_ticks(nq_u64 ticks) {
 
     start = timer64_get_ticks();
 
+    /*
+     * Real sleep: mark this task SLEEPING and switch to another task. The
+     * timer tick makes it READY again at wake_tick and schedules it. While
+     * it sleeps it uses no CPU time, so other apps keep their frame rate.
+     */
+    if (g_current && !process64_preempt_disabled()) {
+        nq_u64 flags = process64_irq_save_disable();
+        process64_task_t* next = process64_pick_next();
+
+        if (next) {
+            g_current->wake_tick = start + ticks;
+            g_current->state = PROCESS64_SLEEPING;
+
+            process64_switch_to(next);
+
+            process64_irq_restore(flags);
+            return;
+        }
+
+        process64_irq_restore(flags);
+    }
+
+    /*
+     * Nothing else to run (or we are inside a guarded section): wait for
+     * timer interrupts in place.
+     */
     while ((timer64_get_ticks() - start) < ticks) {
-        /*
-         * We are inside a syscall/interrupt return path.
-         * Do NOT process64_yield() here yet.
-         *
-         * Enable interrupts so PIT ticks can advance, then halt until
-         * the next interrupt. The CPU wakes on timer IRQ, returns here,
-         * and we check ticks again.
-         */
         __asm__ volatile ("sti");
         __asm__ volatile ("hlt");
         __asm__ volatile ("cli");
@@ -1146,20 +1239,29 @@ static void process64_reap_task(process64_task_t* task) {
     }
 
     /*
-     * Private terminal cleanup.
-     *
-     * Only do this if terminal64 has a destroy function.
-     * If it does not yet, leave this as a later TODO.
+     * Release the private terminal session so it can be reused; there are
+     * only TERM64_MAX_SESSIONS of them. terminal64_destroy() switches the
+     * text console back to the kernel terminal if this one was showing.
      */
-#if 0
     if (task->owns_terminal && task->terminal) {
         terminal64_destroy(task->terminal);
     }
-#endif
 
     if (task->gfx.buffer) {
         kfree64(task->gfx.buffer);
         task->gfx.buffer = 0;
+    }
+
+    /*
+     * Files the app left open.
+     */
+    for (nq_u32 i = 0; i < PROCESS64_MAX_FILES; i++) {
+        if (task->files[i].data) {
+            kfree64(task->files[i].data);
+            task->files[i].data = 0;
+        }
+
+        task->files[i].used = 0;
     }
 
     task->gfx.mode = PROCESS64_GFX_NONE;
@@ -1284,7 +1386,7 @@ static void str_copy_bounded64(char* dst, const char* src, nq_u64 dst_size) {
     dst[i] = 0;
 }
 
-int process64_file_open(const char* path, nq_u64 size) {
+int process64_file_open(const char* path, nq_u8* data, nq_u64 size) {
     process64_task_t* task = process64_current();
 
     if (!task || !path || !path[0]) {
@@ -1294,6 +1396,7 @@ int process64_file_open(const char* path, nq_u64 size) {
     for (nq_u32 i = 0; i < PROCESS64_MAX_FILES; i++) {
         if (!task->files[i].used) {
             task->files[i].used = 1;
+            task->files[i].data = data;
             task->files[i].size = size;
             task->files[i].offset = 0;
             str_copy_bounded64(
@@ -1331,6 +1434,11 @@ int process64_file_close(int handle) {
 
     if (!task->files[idx].used) {
         return -1;
+    }
+
+    if (task->files[idx].data) {
+        kfree64(task->files[idx].data);
+        task->files[idx].data = 0;
     }
 
     task->files[idx].used = 0;

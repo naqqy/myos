@@ -41,6 +41,23 @@ void fb64_draw_xrgb32_row(
     nq_u32 count
 );
 
+/*
+ * Copies a w x h block of XRGB32 pixels to the screen at (x, y).
+ * `pixels` points at the first pixel of the block and `stride` is the
+ * number of pixels between the starts of consecutive source rows.
+ *
+ * When the display is BGRx (the usual GOP format) XRGB32 is already the
+ * native layout and each row is a straight memory copy.
+ */
+void fb64_blit_xrgb32(
+    nq_u32 x,
+    nq_u32 y,
+    nq_u32 w,
+    nq_u32 h,
+    const nq_u32* pixels,
+    nq_u32 stride
+);
+
 void fb64_blit_rgb32(
     int dst_x,
     int dst_y,

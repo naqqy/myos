@@ -14,6 +14,10 @@
  * This avoids writing WOLF_W/WOLF_H pixels into WOLF_VIEW_W/WOLF_VIEW_H
  * buffers, which was causing a user-mode page fault just past .bss.
  *
+ * Walls are textured with /assets/game/wall.ni when it loads; each wall
+ * type tints the texture with its own colour. Without the texture the walls
+ * fall back to flat shaded stripes.
+ *
  * Controls:
  *   W/S = forward/back
  *   Q/E = strafe
@@ -50,6 +54,17 @@ static u32 g_present_pixels[WOLF_W * WOLF_H];
 static u32 g_background[WOLF_VIEW_W * WOLF_VIEW_H];
 static i32 g_camera_x[WOLF_VIEW_W];
 static int g_tables_ready = 0;
+
+/*
+ * Wall texture, parsed in place from the NIMG file (16-byte header plus
+ * up to 256x256 pixels). u32 storage gives the alignment the parser needs.
+ */
+#define WALL_TEXTURE_PATH "/assets/game/wall.ni"
+#define WALL_TEXTURE_FILE_MAX (16u + 256u * 256u * 4u)
+
+static u32 g_wall_texture_file[WALL_TEXTURE_FILE_MAX / 4u];
+static r3d_texture_t g_wall_texture;
+static int g_wall_texture_ready = 0;
 
 static const char g_map[MAP_H][MAP_W + 1] = {
     "1111111111111111",
@@ -135,6 +150,30 @@ static u32 shade_color(u32 color, int shade) {
     return (r << 16) | (g << 8) | b;
 }
 
+/*
+ * Tint applied to the wall texture. Plain walls ('1') keep the texture's
+ * own colours; the other types are tinted so they stay recognisable.
+ */
+static u32 wall_tint_color(int wall_type) {
+    if (wall_type == '2') {
+        return 0x00FF8080u;
+    }
+
+    if (wall_type == '3') {
+        return 0x0090C8FFu;
+    }
+
+    if (wall_type == '4') {
+        return 0x00FFF080u;
+    }
+
+    if (wall_type == '5') {
+        return 0x00A0FF90u;
+    }
+
+    return 0x00FFFFFFu;
+}
+
 static u32 wall_base_color(int wall_type) {
     if (wall_type == '2') {
         return 0x00E05050u;
@@ -191,6 +230,90 @@ static void draw_view_vline(u32* pixels, int x, int y0, int y1, u32 color) {
     for (int y = y0; y < y1; y++) {
         *dst = color;
         dst += WOLF_VIEW_W;
+    }
+}
+
+/*
+ * Draws one textured wall column.
+ *
+ * wall_top/wall_h describe the whole (unclipped) wall slice so the texture
+ * is stretched over the full wall height even when part of it is off
+ * screen; only rows inside the view are written.
+ *
+ * tex_u is the horizontal position on the wall, 0..FP_ONE.
+ */
+static void draw_textured_wall_column(
+    u32* pixels,
+    int x,
+    int wall_top,
+    int wall_h,
+    i32 tex_u,
+    u32 tint,
+    int shade
+) {
+    const r3d_texture_t* tex = &g_wall_texture;
+
+    if (!pixels || x < 0 || x >= (int)WOLF_VIEW_W || wall_h <= 0) {
+        return;
+    }
+
+    int y0 = wall_top;
+    int y1 = wall_top + wall_h;
+
+    if (y0 < 0) {
+        y0 = 0;
+    }
+
+    if (y1 > (int)WOLF_VIEW_H) {
+        y1 = (int)WOLF_VIEW_H;
+    }
+
+    if (y0 >= y1) {
+        return;
+    }
+
+    if (shade < 32) {
+        shade = 32;
+    }
+
+    if (shade > 255) {
+        shade = 255;
+    }
+
+    u32 tx = (((u32)tex_u & (FP_ONE - 1)) * tex->width) >> FP_SHIFT;
+
+    /*
+     * Texture rows advanced per screen row, 16.16 fixed point.
+     */
+    u32 step = (u32)(((u64)tex->height << 16) / (u64)wall_h);
+    u32 pos = (u32)(y0 - wall_top) * step;
+
+    /*
+     * Fold the distance shade into the tint once per column.
+     */
+    u32 mr = (((tint >> 16) & 0xFFu) * (u32)shade) / 255u;
+    u32 mg = (((tint >> 8) & 0xFFu) * (u32)shade) / 255u;
+    u32 mb = ((tint & 0xFFu) * (u32)shade) / 255u;
+
+    u32* dst = pixels + ((u32)y0 * WOLF_VIEW_W) + (u32)x;
+
+    for (int y = y0; y < y1; y++) {
+        u32 ty = pos >> 16;
+
+        if (ty >= tex->height) {
+            ty = tex->height - 1u;
+        }
+
+        u32 texel = tex->pixels[ty * tex->width + tx];
+
+        u32 r = (((texel >> 16) & 0xFFu) * mr) / 255u;
+        u32 g = (((texel >> 8) & 0xFFu) * mg) / 255u;
+        u32 b = ((texel & 0xFFu) * mb) / 255u;
+
+        *dst = (r << 16) | (g << 8) | b;
+
+        dst += WOLF_VIEW_W;
+        pos += step;
     }
 }
 
@@ -405,6 +528,35 @@ static void render_walls(u32* pixels, wolf_player_t* player) {
             (int)(((i64)WOLF_VIEW_H * (i64)FP_ONE) /
                   (i64)corrected_dist);
 
+        int shade = 255 - (corrected_dist >> 7);
+
+        if (hit.side) {
+            shade -= 45;
+        }
+
+        /*
+         * Position along the wall, 0..FP_ONE, from the impact coordinate.
+         */
+        i32 tex = hit.side ?
+            (hit.hit_x & (FP_ONE - 1)) :
+            (hit.hit_y & (FP_ONE - 1));
+
+        if (g_wall_texture_ready) {
+            draw_textured_wall_column(
+                pixels,
+                x,
+                ((int)WOLF_VIEW_H - wall_h) / 2,
+                wall_h,
+                tex,
+                wall_tint_color(hit.wall_type),
+                shade
+            );
+            continue;
+        }
+
+        /*
+         * Flat-shaded fallback when the texture is not available.
+         */
         if (wall_h > (int)WOLF_VIEW_H * 2) {
             wall_h = (int)WOLF_VIEW_H * 2;
         }
@@ -420,21 +572,11 @@ static void render_walls(u32* pixels, wolf_player_t* player) {
             y1 = (int)WOLF_VIEW_H;
         }
 
-        int shade = 255 - (corrected_dist >> 7);
-
-        if (hit.side) {
-            shade -= 45;
-        }
-
         u32 color = shade_color(wall_base_color(hit.wall_type), shade);
 
         /*
          * Cheap vertical stripe using impact coordinate.
          */
-        i32 tex = hit.side ?
-            (hit.hit_x & (FP_ONE - 1)) :
-            (hit.hit_y & (FP_ONE - 1));
-
         if ((tex >> (FP_SHIFT - 3)) & 1) {
             color = shade_color(color, 210);
         }
@@ -598,6 +740,17 @@ int main(void) {
     if (win < 0) {
         puts("wolf3d: win_create failed\n");
         return 1;
+    }
+
+    g_wall_texture_ready = r3d_texture_load(
+        WALL_TEXTURE_PATH,
+        g_wall_texture_file,
+        sizeof(g_wall_texture_file),
+        &g_wall_texture
+    );
+
+    if (!g_wall_texture_ready) {
+        puts("wolf3d: " WALL_TEXTURE_PATH " not loaded, using flat walls\n");
     }
 
     puts("Wolf3D controls:\n");

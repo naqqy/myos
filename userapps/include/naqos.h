@@ -116,6 +116,27 @@ typedef struct naq_gfx_buffer {
 #define NAQ_WIN_EVENT_RESIZE 4
 #define NAQ_WIN_EVENT_MOUSE  5
 
+/*
+ * NAQ_WIN_EVENT_MOUSE
+ *   x, y  pointer position inside the window's content area, in window
+ *         pixels (not scaled to your frame size if they differ)
+ *   key   buttons currently held: NAQ_MOUSE_BUTTON_* bits
+ *   w     what happened: NAQ_MOUSE_MOVE / PRESS / RELEASE
+ *   h     the button that changed, for PRESS and RELEASE
+ *
+ * NAQ_WIN_EVENT_RESIZE
+ *   w, h  new size of the content area. Present frames of that size to
+ *         fill the window exactly; frames of any other size are stretched
+ *         to fit, so apps that ignore this event still fill the window.
+ */
+#define NAQ_MOUSE_MOVE    0
+#define NAQ_MOUSE_PRESS   1
+#define NAQ_MOUSE_RELEASE 2
+
+#define NAQ_MOUSE_BUTTON_LEFT   0x01u
+#define NAQ_MOUSE_BUTTON_RIGHT  0x02u
+#define NAQ_MOUSE_BUTTON_MIDDLE 0x04u
+
 #define NAQ_WIN_FLAG_BORDERED    0x00000000u
 #define NAQ_WIN_FLAG_BORDERLESS  0x00000001u
 #define NAQ_WIN_FLAG_FULLSCREEN  0x00000002u
@@ -225,6 +246,12 @@ int open(const char* path, u64 flags);
 i64 read(int fd, void* buf, size_t len);
 int close(int fd);
 int stat(const char* path, naq_stat_t* out);
+
+/*
+ * Reads a whole file into buf. Returns the number of bytes read, or -1 if
+ * the file cannot be opened or does not fit in buf_size bytes.
+ */
+i64 read_file(const char* path, void* buf, size_t buf_size);
 
 /*
  * Direct graphics syscalls.

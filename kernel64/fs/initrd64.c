@@ -173,6 +173,93 @@ int initrd64_list_path(const char* path) {
     return 1;
 }
 
+int initrd64_enum_path(const char* path, initrd64_enum_cb_t cb, void* ctx) {
+    if (!g_initrd_available || !cb) {
+        return 0;
+    }
+
+    if (!path || !path[0]) {
+        path = "/";
+    }
+
+    nq_u64 prefix_len = 0;
+
+    while (path[prefix_len]) {
+        prefix_len++;
+    }
+
+    /*
+     * Compare without a trailing slash so "/apps" and "/apps/" both work.
+     */
+    while (prefix_len > 1 && path[prefix_len - 1] == '/') {
+        prefix_len--;
+    }
+
+    if (prefix_len == 1 && path[0] == '/') {
+        prefix_len = 0;
+    }
+
+    for (nq_u32 i = 0; i < g_header->file_count; i++) {
+        const char* p = g_entries[i].path;
+        nq_u64 k = 0;
+        int match = 1;
+
+        for (k = 0; k < prefix_len; k++) {
+            char a = p[k];
+            char b = path[k];
+
+            if (a >= 'a' && a <= 'z') {
+                a = (char)(a - 'a' + 'A');
+            }
+
+            if (b >= 'a' && b <= 'z') {
+                b = (char)(b - 'a' + 'A');
+            }
+
+            if (!a || a != b) {
+                match = 0;
+                break;
+            }
+        }
+
+        if (!match || p[prefix_len] != '/') {
+            continue;
+        }
+
+        const char* name = p + prefix_len + 1;
+        int nested = 0;
+
+        for (nq_u64 j = 0; name[j]; j++) {
+            if (name[j] == '/') {
+                nested = 1;
+                break;
+            }
+        }
+
+        if (nested || !name[0]) {
+            continue;
+        }
+
+        cb(name, g_entries[i].size, 0, ctx);
+    }
+
+    return 1;
+}
+
+int initrd64_file_size(const char* path, nq_u64* out_size) {
+    const initrd64_entry_t* e = initrd64_find_file(path);
+
+    if (!e) {
+        return 0;
+    }
+
+    if (out_size) {
+        *out_size = e->size;
+    }
+
+    return 1;
+}
+
 int initrd64_read_file(
     const char* path,
     void* out_buf,

@@ -3,6 +3,7 @@
 #include "../fs/vfs64.h"
 #include "../mm/kmem64.h"
 #include "../mm/paging64.h"
+#include "../mm/vmem64.h"
 #include "../mm/usercopy64.h"
 #include "../arch/x86_64/usermode64.h"
 #include "../k64_console.h"
@@ -39,13 +40,11 @@
 #define PF_R          4
 
 /*
- * User app virtual region.
- *
- * The addresses are fixed so existing userapp linker scripts continue to work,
- * but mappings are now per-process.
+ * User app virtual region (see VMEM64_USER_BASE). Apps are linked at the
+ * base; the user stack sits at the top. Mappings are per-process.
  */
-#define ELF64_USER_MIN_ADDR 0x02000000ull
-#define ELF64_USER_MAX_ADDR 0x10000000ull
+#define ELF64_USER_MIN_ADDR VMEM64_USER_BASE
+#define ELF64_USER_MAX_ADDR VMEM64_USER_LIMIT
 #define ELF64_USER_STACK_TOP ELF64_USER_MAX_ADDR
 #define ELF64_USER_STACK_BASE (ELF64_USER_STACK_TOP - ELF64_USER_STACK_SIZE)
 
@@ -569,25 +568,10 @@ int elf64_exec_file(const char* path) {
     elf64_debug("\n");
 
     /*
-     * The file buffer lives on the kernel heap (direct map), not in BSS.
-     * A 16 MiB static buffer made the kernel image larger than the memory
-     * the UEFI loader reserves for it and overlapped the user virtual range
-     * at ELF64_USER_MIN_ADDR, where it disappears as soon as a process maps
-     * its own pages.
+     * The file is read into a kernel heap buffer sized to the file (direct
+     * map), not into BSS: a big static buffer made the kernel image larger
+     * than the memory the UEFI loader reserves for it.
      */
-    /*
-     * The VFS has no cheap "file size" query, so start with a small buffer
-     * and grow it. Apps are tens of KiB; asking the heap for the full
-     * ELF64_MAX_IMAGE_SIZE as one contiguous block on every launch can fail
-     * on machines with little or fragmented low memory.
-     */
-    static const nq_u64 buf_sizes[] = {
-        256ull * 1024ull,
-        1024ull * 1024ull,
-        4ull * 1024ull * 1024ull,
-        ELF64_MAX_IMAGE_SIZE
-    };
-
     int file_read = 0;
     int loaded = 0;
     char candidate[ELF64_MAX_PATH];
@@ -597,43 +581,35 @@ int elf64_exec_file(const char* path) {
      * typed, then with .ELF added, then the same two under /apps/.
      */
     for (nq_u32 c = 0; c < ELF64_PATH_CANDIDATES && !file_read; c++) {
+        void* file_buf = 0;
+        nq_u64 file_size = 0;
+
         if (!elf64_build_candidate(path, c, candidate, sizeof(candidate))) {
             continue;
         }
 
-        for (nq_u32 i = 0; i < sizeof(buf_sizes) / sizeof(buf_sizes[0]); i++) {
-            nq_u64 buf_size = buf_sizes[i];
-            nq_u64 file_size = 0;
+        process64_preempt_disable();
 
-            nq_u8* file_buf = (nq_u8*)kmalloc64(buf_size);
+        file_read = vfs64_read_file_alloc(
+            candidate,
+            ELF64_MAX_IMAGE_SIZE,
+            &file_buf,
+            &file_size
+        );
 
-            if (!file_buf) {
-                k64_print("elf64: failed to allocate file buffer. size=");
-                k64_print_dec64(buf_size);
-                k64_print(" bytes\n");
-                return 0;
-            }
+        if (file_read) {
+            loaded = elf64_load_image(
+                (const nq_u8*)file_buf,
+                file_size,
+                &entry,
+                &user_stack_top
+            );
+        }
 
-            process64_preempt_disable();
+        process64_preempt_enable();
 
-            file_read = vfs64_read_file(candidate, file_buf, buf_size, &file_size);
-
-            if (file_read) {
-                loaded = elf64_load_image(
-                    file_buf,
-                    file_size,
-                    &entry,
-                    &user_stack_top
-                );
-            }
-
-            process64_preempt_enable();
-
+        if (file_buf) {
             kfree64(file_buf);
-
-            if (file_read) {
-                break;
-            }
         }
     }
 

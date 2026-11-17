@@ -17,11 +17,21 @@
  */
 
 /*
- * User space POC region.
- * Current ELF apps already use 0x02000000+.
+ * User space.
+ *
+ * User programs live in their own top-level page-table slot (PML4 entry 1,
+ * starting at 512 GiB). Nothing of the kernel is mapped there, and nothing
+ * of a user program is mapped in the kernel's slots, so:
+ *   - each process gets a private PML4[1] subtree; every other PML4 entry
+ *     is shared with the kernel and stays supervisor-only,
+ *   - user mappings can never shadow kernel identity-mapped memory,
+ *   - a user pointer is valid only if it lies inside this range.
+ *
+ * userapps/userapp.ld links apps at VMEM64_USER_BASE.
  */
-#define VMEM64_USER_BASE              0x0000000002000000ull
-#define VMEM64_USER_LIMIT             0x0000000040000000ull
+#define VMEM64_USER_BASE              0x0000008000000000ull
+#define VMEM64_USER_LIMIT             0x0000008040000000ull  /* 1 GiB */
+#define VMEM64_USER_PML4_INDEX        ((VMEM64_USER_BASE >> 39) & 0x1FFull)
 
 /*
  * Low identity map.

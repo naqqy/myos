@@ -1,0 +1,6 @@
+# Build outputs (regenerate with ./build.sh uefi)
+build/
+
+# Python caches from tools/
+__pycache__/
+*.pyc

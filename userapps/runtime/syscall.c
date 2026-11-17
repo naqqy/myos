@@ -118,6 +118,39 @@ int stat(const char* path, naq_stat_t* out) {
     return (int)syscall2(SYS64_STAT, (u64)path, (u64)out);
 }
 
+i64 read_file(const char* path, void* buf, size_t buf_size) {
+    naq_stat_t st;
+    size_t total = 0;
+
+    if (!path || !buf) {
+        return -1;
+    }
+
+    if (stat(path, &st) < 0 || st.size > buf_size) {
+        return -1;
+    }
+
+    int fd = open(path, 0);
+
+    if (fd < 0) {
+        return -1;
+    }
+
+    while (total < st.size) {
+        i64 got = read(fd, (u8*)buf + total, st.size - total);
+
+        if (got <= 0) {
+            break;
+        }
+
+        total += (size_t)got;
+    }
+
+    close(fd);
+
+    return total == st.size ? (i64)total : -1;
+}
+
 int gfx_info(naq_gfx_info_t* out) {
     return (int)syscall1(SYS64_GFX_INFO, (u64)out);
 }

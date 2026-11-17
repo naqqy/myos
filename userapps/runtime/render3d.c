@@ -503,6 +503,139 @@ void r3d_draw_triangle(
     }
 }
 
+u32 r3d_texture_sample(const r3d_texture_t* texture, i32 u, i32 v) {
+    if (!texture || !texture->pixels || !texture->width || !texture->height) {
+        return 0x00FF00FFu;
+    }
+
+    /*
+     * Wrap to 0..1, then scale to texels. The & keeps negative coordinates
+     * tiling correctly because R3D_FP_ONE is a power of two.
+     */
+    u32 fu = (u32)u & (R3D_FP_ONE - 1);
+    u32 fv = (u32)v & (R3D_FP_ONE - 1);
+
+    u32 tx = (fu * texture->width) >> R3D_FP_SHIFT;
+    u32 ty = (fv * texture->height) >> R3D_FP_SHIFT;
+
+    return texture->pixels[ty * texture->width + tx];
+}
+
+/*
+ * 1/z scale for perspective-correct interpolation. z is 20.12 fixed point
+ * between near_z (about 0.33) and far_z (128.0), so 2^26 / z ranges from
+ * about 49000 down to 128: enough precision at the far plane, and small
+ * enough that weight * (u / z) cannot overflow 64 bits even for triangles
+ * that extend far off screen.
+ */
+#define R3D_INV_Z_ONE (1ll << 26)
+
+void r3d_draw_triangle_textured(
+    r3d_context_t* ctx,
+    r3d_vertex2_t a,
+    r3d_vertex2_t b,
+    r3d_vertex2_t c,
+    r3d_vec2_t uva,
+    r3d_vec2_t uvb,
+    r3d_vec2_t uvc,
+    const r3d_texture_t* texture,
+    int brightness
+) {
+    if (!ctx || !ctx->pixels || !ctx->depth || !texture) {
+        return;
+    }
+
+    if (a.z <= 0 || b.z <= 0 || c.z <= 0) {
+        return;
+    }
+
+    i64 area = r3d_edge(a.x, a.y, b.x, b.y, c.x, c.y);
+
+    if (area == 0) {
+        return;
+    }
+
+    if (area < 0) {
+        r3d_vertex2_t tmp = b;
+        r3d_vec2_t tmp_uv = uvb;
+
+        b = c;
+        c = tmp;
+        uvb = uvc;
+        uvc = tmp_uv;
+        area = -area;
+    }
+
+    i32 min_x = a.x;
+    i32 max_x = a.x;
+    i32 min_y = a.y;
+    i32 max_y = a.y;
+
+    if (b.x < min_x) min_x = b.x;
+    if (c.x < min_x) min_x = c.x;
+    if (b.x > max_x) max_x = b.x;
+    if (c.x > max_x) max_x = c.x;
+
+    if (b.y < min_y) min_y = b.y;
+    if (c.y < min_y) min_y = c.y;
+    if (b.y > max_y) max_y = b.y;
+    if (c.y > max_y) max_y = c.y;
+
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+
+    if (max_x >= (i32)ctx->width) max_x = (i32)ctx->width - 1;
+    if (max_y >= (i32)ctx->height) max_y = (i32)ctx->height - 1;
+
+    /*
+     * Perspective-correct mapping: u/z, v/z and 1/z are linear in screen
+     * space, so interpolate those and divide per pixel.
+     */
+    i64 iza = R3D_INV_Z_ONE / a.z;
+    i64 izb = R3D_INV_Z_ONE / b.z;
+    i64 izc = R3D_INV_Z_ONE / c.z;
+
+    i64 ua = (i64)uva.x * iza;
+    i64 ub = (i64)uvb.x * izb;
+    i64 uc = (i64)uvc.x * izc;
+
+    i64 va = (i64)uva.y * iza;
+    i64 vb = (i64)uvb.y * izb;
+    i64 vc = (i64)uvc.y * izc;
+
+    for (i32 y = min_y; y <= max_y; y++) {
+        for (i32 x = min_x; x <= max_x; x++) {
+            i64 w0 = r3d_edge(b.x, b.y, c.x, c.y, x, y);
+            i64 w1 = r3d_edge(c.x, c.y, a.x, a.y, x, y);
+            i64 w2 = r3d_edge(a.x, a.y, b.x, b.y, x, y);
+
+            if (w0 < 0 || w1 < 0 || w2 < 0) {
+                continue;
+            }
+
+            i64 inv_z = w0 * iza + w1 * izb + w2 * izc;
+
+            if (inv_z <= 0) {
+                continue;
+            }
+
+            i32 z = (i32)((area * R3D_INV_Z_ONE) / inv_z);
+            u32 index = (u32)y * ctx->stride + (u32)x;
+
+            if (z <= 0 || z >= ctx->depth[index]) {
+                continue;
+            }
+
+            i32 u = (i32)((w0 * ua + w1 * ub + w2 * uc) / inv_z);
+            i32 v = (i32)((w0 * va + w1 * vb + w2 * vc) / inv_z);
+
+            ctx->depth[index] = z;
+            ctx->pixels[index] =
+                r3d_shade(r3d_texture_sample(texture, u, v), brightness);
+        }
+    }
+}
+
 static void r3d_draw_wire_line(
     r3d_context_t* ctx,
     int x0,
@@ -548,7 +681,7 @@ static void r3d_draw_wire_line(
     }
 }
 
-static u32 r3d_shade_color(u32 base, int brightness) {
+u32 r3d_shade(u32 base, int brightness) {
     if (brightness < 32) {
         brightness = 32;
     }
@@ -649,9 +782,33 @@ void r3d_draw_mesh(
             continue;
         }
 
-        u32 base = mesh->tri_colors ? mesh->tri_colors[tri] : 0x0000D8FFu;
         int brightness = r3d_triangle_brightness(view[ia], view[ib], view[ic]);
-        u32 color = r3d_shade_color(base, brightness);
+
+        if (mesh->texture && mesh->uvs && mesh->tri_uvs) {
+            u32 ta = mesh->tri_uvs[tri].a;
+            u32 tb = mesh->tri_uvs[tri].b;
+            u32 tc = mesh->tri_uvs[tri].c;
+
+            if (ta < mesh->uv_count &&
+                tb < mesh->uv_count &&
+                tc < mesh->uv_count) {
+                r3d_draw_triangle_textured(
+                    ctx,
+                    projected[ia],
+                    projected[ib],
+                    projected[ic],
+                    mesh->uvs[ta],
+                    mesh->uvs[tb],
+                    mesh->uvs[tc],
+                    mesh->texture,
+                    brightness
+                );
+                continue;
+            }
+        }
+
+        u32 base = mesh->tri_colors ? mesh->tri_colors[tri] : 0x0000D8FFu;
+        u32 color = r3d_shade(base, brightness);
 
         r3d_draw_triangle(
             ctx,
@@ -709,6 +866,216 @@ void r3d_draw_mesh(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Asset parsing                                                               */
+/* -------------------------------------------------------------------------- */
+
+#define R3D_NMODEL_MAGIC   0x4C444D4Eu /* "NMDL" */
+#define R3D_NMODEL_VERSION 1u
+#define R3D_NMODEL_FLAG_UVS 0x00000001u
+
+#define R3D_NIMG_MAGIC  0x474D494Eu /* "NIMG" */
+#define R3D_NIMG_FORMAT 32u
+
+#define R3D_MAX_MODEL_TRIS   65535u
+#define R3D_MAX_MODEL_UVS    65535u
+#define R3D_MAX_TEXTURE_SIZE 4096u
+
+typedef struct r3d_nmodel_header {
+    u32 magic;
+    u32 version;
+    u32 flags;
+    u32 vertex_count;
+    u32 tri_count;
+    u32 uv_count;
+    u32 reserved[2];
+} r3d_nmodel_header_t;
+
+typedef struct r3d_nimg_header {
+    u32 magic;
+    u32 width;
+    u32 height;
+    u32 format;
+} r3d_nimg_header_t;
+
+/*
+ * Claims `bytes` (rounded up to 4) at *offset. Returns 0 if that would run
+ * past the end of the file.
+ */
+static int r3d_take_block(u64 size, u64* offset, u64 bytes, u64* out_start) {
+    u64 padded = (bytes + 3ull) & ~3ull;
+
+    if (*offset > size || padded > size - *offset) {
+        return 0;
+    }
+
+    *out_start = *offset;
+    *offset += padded;
+
+    return 1;
+}
+
+int r3d_model_parse(const void* data, u64 size, r3d_mesh_t* out) {
+    const u8* base = (const u8*)data;
+    const r3d_nmodel_header_t* h = (const r3d_nmodel_header_t*)data;
+
+    if (!data || !out || size < sizeof(*h)) {
+        return 0;
+    }
+
+    /*
+     * The arrays are used in place, so the buffer must be 4-byte aligned.
+     */
+    if (((u64)data & 3ull) != 0) {
+        return 0;
+    }
+
+    if (h->magic != R3D_NMODEL_MAGIC || h->version != R3D_NMODEL_VERSION) {
+        return 0;
+    }
+
+    int has_uvs = (h->flags & R3D_NMODEL_FLAG_UVS) != 0;
+
+    if (h->vertex_count == 0 || h->vertex_count > R3D_MAX_MESH_VERTICES ||
+        h->tri_count == 0 || h->tri_count > R3D_MAX_MODEL_TRIS ||
+        h->uv_count > R3D_MAX_MODEL_UVS) {
+        return 0;
+    }
+
+    if (has_uvs && h->uv_count == 0) {
+        return 0;
+    }
+
+    u64 offset = sizeof(*h);
+    u64 vertices_at = 0;
+    u64 uvs_at = 0;
+    u64 tris_at = 0;
+    u64 tri_uvs_at = 0;
+    u64 colors_at = 0;
+
+    if (!r3d_take_block(
+            size, &offset,
+            (u64)h->vertex_count * sizeof(r3d_vec3_t), &vertices_at)) {
+        return 0;
+    }
+
+    if (has_uvs &&
+        !r3d_take_block(
+            size, &offset,
+            (u64)h->uv_count * sizeof(r3d_vec2_t), &uvs_at)) {
+        return 0;
+    }
+
+    if (!r3d_take_block(
+            size, &offset,
+            (u64)h->tri_count * sizeof(r3d_tri_t), &tris_at)) {
+        return 0;
+    }
+
+    if (has_uvs &&
+        !r3d_take_block(
+            size, &offset,
+            (u64)h->tri_count * sizeof(r3d_tri_t), &tri_uvs_at)) {
+        return 0;
+    }
+
+    if (!r3d_take_block(
+            size, &offset,
+            (u64)h->tri_count * sizeof(u32), &colors_at)) {
+        return 0;
+    }
+
+    const r3d_tri_t* tris = (const r3d_tri_t*)(base + tris_at);
+    const r3d_tri_t* tri_uvs =
+        has_uvs ? (const r3d_tri_t*)(base + tri_uvs_at) : 0;
+
+    for (u32 i = 0; i < h->tri_count; i++) {
+        if (tris[i].a >= h->vertex_count ||
+            tris[i].b >= h->vertex_count ||
+            tris[i].c >= h->vertex_count) {
+            return 0;
+        }
+
+        if (tri_uvs &&
+            (tri_uvs[i].a >= h->uv_count ||
+             tri_uvs[i].b >= h->uv_count ||
+             tri_uvs[i].c >= h->uv_count)) {
+            return 0;
+        }
+    }
+
+    out->vertices = (const r3d_vec3_t*)(base + vertices_at);
+    out->vertex_count = h->vertex_count;
+    out->tris = tris;
+    out->tri_count = h->tri_count;
+    out->tri_colors = (const u32*)(base + colors_at);
+    out->uvs = has_uvs ? (const r3d_vec2_t*)(base + uvs_at) : 0;
+    out->uv_count = has_uvs ? h->uv_count : 0;
+    out->tri_uvs = tri_uvs;
+    out->texture = 0;
+
+    return 1;
+}
+
+int r3d_texture_parse(const void* data, u64 size, r3d_texture_t* out) {
+    const r3d_nimg_header_t* h = (const r3d_nimg_header_t*)data;
+
+    if (!data || !out || size < sizeof(*h)) {
+        return 0;
+    }
+
+    if (((u64)data & 3ull) != 0) {
+        return 0;
+    }
+
+    if (h->magic != R3D_NIMG_MAGIC || h->format != R3D_NIMG_FORMAT) {
+        return 0;
+    }
+
+    if (h->width == 0 || h->height == 0 ||
+        h->width > R3D_MAX_TEXTURE_SIZE ||
+        h->height > R3D_MAX_TEXTURE_SIZE) {
+        return 0;
+    }
+
+    u64 pixel_bytes = (u64)h->width * (u64)h->height * sizeof(u32);
+
+    if (pixel_bytes > size - sizeof(*h)) {
+        return 0;
+    }
+
+    out->pixels = (const u32*)((const u8*)data + sizeof(*h));
+    out->width = h->width;
+    out->height = h->height;
+
+    return 1;
+}
+
+int r3d_model_load(const char* path, void* buf, u64 buf_size, r3d_mesh_t* out) {
+    i64 size = read_file(path, buf, buf_size);
+
+    if (size <= 0) {
+        return 0;
+    }
+
+    return r3d_model_parse(buf, (u64)size, out);
+}
+
+int r3d_texture_load(
+    const char* path,
+    void* buf,
+    u64 buf_size,
+    r3d_texture_t* out
+) {
+    i64 size = read_file(path, buf, buf_size);
+
+    if (size <= 0) {
+        return 0;
+    }
+
+    return r3d_texture_parse(buf, (u64)size, out);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Built-in cube mesh                                                          */
 /* -------------------------------------------------------------------------- */
 
@@ -725,14 +1092,18 @@ static const r3d_vec3_t g_r3d_cube_vertices[8] = {
 };
 
 static const r3d_tri_t g_r3d_cube_tris[12] = {
-    { 0, 3, 2 }, { 0, 2, 1 },
-    { 4, 5, 6 }, { 4, 6, 7 },
+    /*
+     * Wound so the outside of the cube is the front face for
+     * R3D_FLAG_BACKFACE_CULL (positive screen-space area).
+     */
+    { 0, 2, 3 }, { 0, 1, 2 },
+    { 4, 6, 5 }, { 4, 7, 6 },
 
-    { 0, 4, 7 }, { 0, 7, 3 },
-    { 1, 2, 6 }, { 1, 6, 5 },
+    { 0, 7, 4 }, { 0, 3, 7 },
+    { 1, 6, 2 }, { 1, 5, 6 },
 
-    { 3, 7, 6 }, { 3, 6, 2 },
-    { 0, 1, 5 }, { 0, 5, 4 }
+    { 3, 6, 7 }, { 3, 2, 6 },
+    { 0, 5, 1 }, { 0, 4, 5 }
 };
 
 static const u32 g_r3d_cube_colors[12] = {
@@ -752,6 +1123,10 @@ r3d_mesh_t r3d_cube_mesh(void) {
     mesh.tris = g_r3d_cube_tris;
     mesh.tri_count = 12;
     mesh.tri_colors = g_r3d_cube_colors;
+    mesh.uvs = 0;
+    mesh.uv_count = 0;
+    mesh.tri_uvs = 0;
+    mesh.texture = 0;
 
     return mesh;
 }

@@ -4,6 +4,7 @@
 #include "timer64.h"
 #include "../../k64_console.h"
 #include "../../input/kinput64.h"
+#include "../../input/mouse64.h"
 #include "../../proc/process64.h"
 #include "../../debug/bootlog64.h"
 
@@ -173,7 +174,17 @@ static void keyboard_drain(int handle_scancodes) {
 
         nq_u8 data = inb(PS2_DATA_PORT);
 
-        if (handle_scancodes && !(status & PS2_STATUS_AUX_DATA)) {
+        if (!handle_scancodes) {
+            continue;
+        }
+
+        /*
+         * Keyboard and mouse share the controller; the AUX bit says which
+         * device this byte came from.
+         */
+        if (status & PS2_STATUS_AUX_DATA) {
+            mouse64_handle_byte(data);
+        } else {
             keyboard_handle_scancode(data);
         }
     }
@@ -206,6 +217,12 @@ void irq_handler64(irq_frame64_t* frame) {
         */
         process64_on_timer_tick();
         return;
+    } else if (irq == 12) {
+        /*
+         * PS/2 mouse. keyboard_drain() routes each byte by its AUX flag, so
+         * the same reader serves both interrupts.
+         */
+        keyboard_drain(1);
     } else if (irq == 1) {
         /*
          * Only read when the controller really has a byte; the timer safety
@@ -227,6 +244,18 @@ void irq64_init(nq_u32 timer_hz) {
     pic_mask_all();
 
     timer64_init(timer_hz);
+
+    /*
+     * PS/2 mouse: set it up while everything is still masked, then open
+     * IRQ12 and the cascade line (IRQ2) that the slave PIC reports through.
+     */
+    if (mouse64_init()) {
+        bootlog64_print("IRQ64: PS/2 mouse enabled.\n");
+        pic_unmask_irq(2);
+        pic_unmask_irq(12);
+    } else {
+        bootlog64_print("IRQ64: no PS/2 mouse.\n");
+    }
 
     pic_unmask_irq(0);
     pic_unmask_irq(1);

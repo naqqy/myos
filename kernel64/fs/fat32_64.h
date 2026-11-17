@@ -16,6 +16,20 @@ int fat32_64_read_file_path(
     nq_u64* out_size
 );
 
+int fat32_64_stat_path(const char* path, nq_u64* out_size, int* out_is_dir);
+
+typedef void (*fat32_64_enum_cb_t)(
+    const char* name,
+    nq_u64 size,
+    int is_dir,
+    void* ctx
+);
+
+/*
+ * Calls cb for every entry directly inside the directory at `path`.
+ */
+int fat32_64_enum_path(const char* path, fat32_64_enum_cb_t cb, void* ctx);
+
 int fat32_64_write_file_path(
     const char* path,
     const nq_u8* data,

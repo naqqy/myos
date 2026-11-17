@@ -520,7 +520,15 @@ static void print_entry_name(const fat32_found_entry_t* entry) {
     }
 }
 
-static void list_directory_cluster(nq_u32 dir_cluster) {
+/*
+ * Calls cb once for every real entry in a directory (skips deleted, volume
+ * label and long-name helper entries).
+ */
+static void enum_directory_cluster(
+    nq_u32 dir_cluster,
+    fat32_64_enum_cb_t cb,
+    void* ctx
+) {
     char lfn[FAT32_MAX_LONG_NAME];
     int have_lfn = 0;
     nq_u32 cluster = dir_cluster;
@@ -566,22 +574,21 @@ static void list_directory_cluster(nq_u32 dir_cluster) {
                 fat32_found_entry_t entry;
                 fill_found_entry(&entry, e, have_lfn ? lfn : 0);
 
-                k64_print("  ");
+                /*
+                 * The callback may read other sectors (and so reuse
+                 * g_sector_buf), which would invalidate `entries`. Copy the
+                 * sector back in afterwards.
+                 */
+                cb(
+                    entry.long_name[0] ? entry.long_name : entry.short_name,
+                    entry.is_directory ? 0 : (nq_u64)entry.file_size,
+                    entry.is_directory,
+                    ctx
+                );
 
-                if (entry.is_directory) {
-                    k64_print("[DIR]  ");
-                } else {
-                    k64_print("       ");
+                if (!read_sector_fs(first_lba + s, g_sector_buf)) {
+                    return;
                 }
-
-                print_entry_name(&entry);
-
-                if (!entry.is_directory) {
-                    k64_print("  size=");
-                    k64_print_dec64(entry.file_size);
-                }
-
-                k64_print("\n");
 
                 str_clear(lfn, sizeof(lfn));
                 have_lfn = 0;
@@ -590,6 +597,30 @@ static void list_directory_cluster(nq_u32 dir_cluster) {
 
         cluster = fat32_next_cluster(cluster);
     }
+}
+
+static void list_print_entry(
+    const char* name,
+    nq_u64 size,
+    int is_dir,
+    void* ctx
+) {
+    (void)ctx;
+
+    k64_print("  ");
+    k64_print(is_dir ? "[DIR]  " : "       ");
+    k64_print(name);
+
+    if (!is_dir) {
+        k64_print("  size=");
+        k64_print_dec64(size);
+    }
+
+    k64_print("\n");
+}
+
+static void list_directory_cluster(nq_u32 dir_cluster) {
+    enum_directory_cluster(dir_cluster, list_print_entry, 0);
 }
 
 static int read_file_by_entry(
@@ -1505,6 +1536,44 @@ int fat32_64_read_file_path(
     }
 
     return read_file_by_entry(&entry, out_buf, max_bytes, out_size);
+}
+
+int fat32_64_enum_path(const char* path, fat32_64_enum_cb_t cb, void* ctx) {
+    fat32_found_entry_t entry;
+
+    if (!g_fat_mounted || !cb) {
+        return 0;
+    }
+
+    if (!resolve_path(path, &entry) || !entry.is_directory) {
+        return 0;
+    }
+
+    enum_directory_cluster(entry.first_cluster, cb, ctx);
+
+    return 1;
+}
+
+int fat32_64_stat_path(const char* path, nq_u64* out_size, int* out_is_dir) {
+    fat32_found_entry_t entry;
+
+    if (!g_fat_mounted || !path) {
+        return 0;
+    }
+
+    if (!resolve_path(path, &entry)) {
+        return 0;
+    }
+
+    if (out_size) {
+        *out_size = entry.is_directory ? 0 : (nq_u64)entry.file_size;
+    }
+
+    if (out_is_dir) {
+        *out_is_dir = entry.is_directory ? 1 : 0;
+    }
+
+    return 1;
 }
 
 int fat32_64_write_file_path(
