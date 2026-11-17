@@ -30,6 +30,15 @@ typedef void (*vfs64_enum_cb_t)(
 int vfs64_enum_dir(const char* path, vfs64_enum_cb_t cb, void* ctx);
 
 int vfs64_mount_root(void);
+
+/*
+ * A USB disk with a FAT32 filesystem appears at /usb. Called by the USB
+ * mass-storage driver when the disk is plugged in or pulled out.
+ * Mounting fails if FAT32 is already in use for the root filesystem.
+ */
+int vfs64_usb_mount(nq_u32 block_device_id, nq_u64 base_lba);
+void vfs64_usb_unmount(void);
+int vfs64_usb_mounted(void);
 int vfs64_mounted(void);
 
 void vfs64_print_summary(void);

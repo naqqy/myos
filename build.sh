@@ -250,8 +250,14 @@ KERNEL64_PCI_OBJ="$BUILD_DIR/pci64.o"
 KERNEL64_XHCI_C="$KERNEL64_DIR/usb/xhci64.c"
 KERNEL64_XHCI_OBJ="$BUILD_DIR/xhci64.o"
 
-KERNEL64_USBKBD_C="$KERNEL64_DIR/usb/usbkbd64.c"
-KERNEL64_USBKBD_OBJ="$BUILD_DIR/usbkbd64.o"
+KERNEL64_USB_C="$KERNEL64_DIR/usb/usb64.c"
+KERNEL64_USB_OBJ="$BUILD_DIR/usb64.o"
+
+KERNEL64_USBHID_C="$KERNEL64_DIR/usb/usbhid64.c"
+KERNEL64_USBHID_OBJ="$BUILD_DIR/usbhid64.o"
+
+KERNEL64_USBMSC_C="$KERNEL64_DIR/usb/usbmsc64.c"
+KERNEL64_USBMSC_OBJ="$BUILD_DIR/usbmsc64.o"
 
 # ------------------------------------------------------------
 # Assets / initrd / user apps
@@ -805,8 +811,10 @@ build_kernel64() {
   compile64_c "Compiling 64-bit GUI compositor" "$KERNEL64_GUI_C" "$KERNEL64_GUI_OBJ" -O2
 
   compile64_c "Compiling 64-bit PCI scanner" "$KERNEL64_PCI_C" "$KERNEL64_PCI_OBJ"
-  compile64_c "Compiling 64-bit xHCI probe" "$KERNEL64_XHCI_C" "$KERNEL64_XHCI_OBJ"
-  compile64_c "Compiling 64-bit USB keyboard foundation" "$KERNEL64_USBKBD_C" "$KERNEL64_USBKBD_OBJ"
+  compile64_c "Compiling 64-bit xHCI driver" "$KERNEL64_XHCI_C" "$KERNEL64_XHCI_OBJ"
+  compile64_c "Compiling 64-bit USB core" "$KERNEL64_USB_C" "$KERNEL64_USB_OBJ"
+  compile64_c "Compiling 64-bit USB keyboard and mouse" "$KERNEL64_USBHID_C" "$KERNEL64_USBHID_OBJ"
+  compile64_c "Compiling 64-bit USB storage" "$KERNEL64_USBMSC_C" "$KERNEL64_USBMSC_OBJ"
 
   echo "==> Compiling 64-bit stack protector runtime"
   "$GCC" "${GCC64_FLAGS[@]}" \
@@ -858,7 +866,9 @@ build_kernel64() {
     "$KERNEL64_GUI_OBJ" \
     "$KERNEL64_PCI_OBJ" \
     "$KERNEL64_XHCI_OBJ" \
-    "$KERNEL64_USBKBD_OBJ" \
+    "$KERNEL64_USB_OBJ" \
+    "$KERNEL64_USBHID_OBJ" \
+    "$KERNEL64_USBMSC_OBJ" \
     build/stack_chk64.o
 
   msg "Converting 64-bit kernel ELF to flat binary"
@@ -1501,6 +1511,14 @@ run_qemu_uefi() {
 
   echo "QEMU acceleration: $qemu_accel"
 
+  # QEMU_USB=1 adds a USB 3 controller with a USB keyboard and pointer, so
+  # input goes through the kernel's USB drivers instead of PS/2.
+  local qemu_usb_args=()
+
+  if [[ "${QEMU_USB:-0}" == "1" ]]; then
+    qemu_usb_args=(-device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet)
+  fi
+
   "$QEMU64" \
     -machine pc \
     -m "${QEMU_RAM:-1024M}" \
@@ -1514,6 +1532,7 @@ run_qemu_uefi() {
     -monitor none \
     -serial none \
     -net none \
+    "${qemu_usb_args[@]}" \
     "${qemu_debug_args[@]}"
 }
 

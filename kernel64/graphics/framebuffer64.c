@@ -1,3 +1,6 @@
+#include "../mm/kmem64.h"
+#include "../mm/paging64.h"
+#include "../arch/x86_64/timer64.h"
 #include "framebuffer64.h"
 #include "../k64_console.h"
 
@@ -136,14 +139,19 @@ void fb64_fill_rect(
         h = g_boot->framebuffer_height - y;
     }
 
-    volatile nq_u32* fb = (volatile nq_u32*)g_boot->framebuffer_base;
+    nq_u32* fb = (nq_u32*)g_boot->framebuffer_base;
 
     for (nq_u32 yy = 0; yy < h; yy++) {
-        nq_u64 row = ((nq_u64)(y + yy) * g_boot->framebuffer_pixels_per_scanline) + x;
+        nq_u32* dst =
+            fb + ((nq_u64)(y + yy) * g_boot->framebuffer_pixels_per_scanline) + x;
+        nq_u64 count = w;
 
-        for (nq_u32 xx = 0; xx < w; xx++) {
-            fb[row + xx] = color;
-        }
+        __asm__ volatile (
+            "rep stosl"
+            : "+D"(dst), "+c"(count)
+            : "a"(color)
+            : "memory"
+        );
     }
 }
 
@@ -307,6 +315,122 @@ void fb64_blit_xrgb32(
             }
         }
     }
+}
+
+static void print_frame_time(const char* label, nq_u64 ticks, nq_u32 frames) {
+    nq_u64 hz = timer64_get_frequency();
+
+    if (!hz) {
+        hz = 1000u;
+    }
+
+    /*
+     * Tenths of a millisecond per frame.
+     */
+    nq_u64 tenths = (ticks * 10000u) / (hz * frames);
+
+    k64_print(label);
+    k64_print_dec64(tenths / 10u);
+    k64_print(".");
+    k64_print_dec64(tenths % 10u);
+    k64_print(" ms per frame");
+
+    if (tenths) {
+        k64_print("  (");
+        k64_print_dec64(10000u / tenths);
+        k64_print(" frames per second at most)");
+    }
+
+    k64_print("\n");
+}
+
+static nq_u64 g_bench_ram_ticks = 0;
+static nq_u64 g_bench_screen_ticks = 0;
+static nq_u32 g_bench_frames = 0;
+
+void fb64_benchmark(void) {
+    const nq_u32 frames = 30;
+
+    g_bench_frames = 0;
+
+    if (!g_fb_available) {
+        k64_print("No framebuffer.\n");
+        return;
+    }
+
+    nq_u32 w = g_boot->framebuffer_width;
+    nq_u32 h = g_boot->framebuffer_height;
+    nq_u64 pixels = (nq_u64)w * h;
+
+    nq_u32* a = (nq_u32*)kmalloc64(pixels * 4u);
+    nq_u32* b = (nq_u32*)kmalloc64(pixels * 4u);
+
+    if (!a || !b) {
+        kfree64(a);
+        kfree64(b);
+        k64_print("Not enough memory for the test.\n");
+        return;
+    }
+
+    for (nq_u64 i = 0; i < pixels; i++) {
+        a[i] = 0x00102030u;
+    }
+
+    /*
+     * Memory to memory: the baseline. A full screen should take a few
+     * milliseconds at most.
+     */
+    nq_u64 start = timer64_get_ticks();
+
+    for (nq_u32 n = 0; n < frames; n++) {
+        const nq_u32* src = a;
+        nq_u32* dst = b;
+        nq_u64 count = pixels;
+
+        __asm__ volatile (
+            "rep movsl"
+            : "+D"(dst), "+S"(src), "+c"(count)
+            :
+            : "memory"
+        );
+    }
+
+    nq_u64 ram_ticks = timer64_get_ticks() - start;
+
+    /*
+     * Memory to screen: what the desktop does every time it redraws.
+     */
+    start = timer64_get_ticks();
+
+    for (nq_u32 n = 0; n < frames; n++) {
+        fb64_blit_xrgb32(0, 0, w, h, a, w);
+    }
+
+    nq_u64 screen_ticks = timer64_get_ticks() - start;
+
+    kfree64(a);
+    kfree64(b);
+
+    g_bench_ram_ticks = ram_ticks;
+    g_bench_screen_ticks = screen_ticks;
+    g_bench_frames = frames;
+}
+
+void fb64_benchmark_report(void) {
+    if (!g_bench_frames) {
+        return;
+    }
+
+    k64_print("Screen: ");
+    k64_print_dec64(g_boot->framebuffer_width);
+    k64_print("x");
+    k64_print_dec64(g_boot->framebuffer_height);
+    k64_print(", write-combining ");
+    k64_print(paging64_framebuffer_write_combined() ? "on" : "off");
+    k64_print("\n");
+
+    print_frame_time("  memory to memory: ", g_bench_ram_ticks, g_bench_frames);
+    print_frame_time("  memory to screen: ", g_bench_screen_ticks, g_bench_frames);
 }
 
 void fb64_print_summary(void) {

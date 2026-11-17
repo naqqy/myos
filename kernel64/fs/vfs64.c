@@ -12,6 +12,11 @@ static vfs64_backend_t g_vfs_backend = VFS64_BACKEND_NONE;
 static int g_initrd_mount_available = 0;
 static int g_fat32_mount_available = 0;
 
+/*
+ * 1 while a USB disk's FAT32 filesystem is mounted at /usb.
+ */
+static volatile int g_usb_mounted = 0;
+
 static int is_sep(char c) {
     return c == '/' || c == '\\';
 }
@@ -212,6 +217,29 @@ static vfs64_backend_t vfs64_pick_backend_for_path(
     }
 
     /*
+     * /usb is the USB disk. Unlike /disk it is allowed in SAFE_HW mode:
+     * it is removable media the user plugged in, not an internal drive.
+     */
+    if (str_starts_with(normalized, "/usb") &&
+        (normalized[4] == 0 || normalized[4] == '/')) {
+        if (!g_usb_mounted) {
+            return VFS64_BACKEND_NONE;
+        }
+
+        const char* sub = normalized + 4;
+
+        if (!sub[0]) {
+            sub = "/";
+        }
+
+        if (out_backend_path) {
+            *out_backend_path = sub;
+        }
+
+        return VFS64_BACKEND_FAT32;
+    }
+
+    /*
      * /disk maps to FAT32 only outside SAFE_HW mode.
      * In SAFE_HW, /disk is intentionally disabled for now.
      */
@@ -377,6 +405,38 @@ int vfs64_mount_root(void) {
     return 0;
 }
 
+int vfs64_usb_mount(nq_u32 block_device_id, nq_u64 base_lba) {
+    /*
+     * The FAT32 driver handles one filesystem at a time.
+     */
+    if (g_usb_mounted || g_vfs_backend == VFS64_BACKEND_FAT32) {
+        return 0;
+    }
+
+    if (!fat32_64_init_device(block_device_id, base_lba)) {
+        return 0;
+    }
+
+    g_usb_mounted = 1;
+
+    return 1;
+}
+
+void vfs64_usb_unmount(void) {
+    if (g_usb_mounted) {
+        g_usb_mounted = 0;
+        fat32_64_unmount();
+    }
+}
+
+int vfs64_usb_mounted(void) {
+    return g_usb_mounted;
+}
+
+static int path_is_root(const char* normalized) {
+    return normalized[0] == '/' && normalized[1] == 0;
+}
+
 int vfs64_mounted(void) {
     return g_vfs_mounted;
 }
@@ -423,7 +483,13 @@ int vfs64_list_dir(const char* path) {
     backend = vfs64_pick_backend_for_path(normalized, &backend_path);
 
     if (backend == VFS64_BACKEND_INITRD) {
-        return initrd64_list_path(backend_path);
+        int listed = initrd64_list_path(backend_path);
+
+        if (listed && g_usb_mounted && path_is_root(normalized)) {
+            k64_print("usb/   (USB disk)\n");
+        }
+
+        return listed;
     }
 
     if (backend == VFS64_BACKEND_FAT32) {
@@ -488,120 +554,106 @@ int vfs64_read_file(
     return 0;
 }
 
-int vfs64_write_file(
+/*
+ * Resolves a path for a write operation. Only FAT32 is writable: the
+ * root filesystem when it is FAT32 (dev/QEMU mode), or the USB disk at
+ * /usb. The block layer still refuses the write until disk writes have
+ * been unlocked ("diskunlock confirm").
+ */
+static int vfs64_resolve_writable(
     const char* path,
-    const void* data,
-    nq_u64 size
+    char* normalized,
+    nq_u64 normalized_size,
+    const char** out_backend_path
 ) {
-    if (safe_mode64_enabled()) {
-        k64_print("vfs64: write blocked by SAFE_HW mount policy\n");
-        return 0;
-    }
-
-    if (g_vfs_backend != VFS64_BACKEND_FAT32) {
-        k64_print("vfs64: root filesystem is read-only\n");
-        return 0;
-    }
-
-    char normalized[VFS64_MAX_PATH];
-
     if (!g_vfs_mounted) {
         k64_print("vfs64: root filesystem not mounted\n");
         return 0;
     }
 
-    if (size > 0 && !data) {
-        return 0;
-    }
-
-    if (!vfs64_normalize_path(path, normalized, sizeof(normalized))) {
+    if (!vfs64_normalize_path(path, normalized, normalized_size)) {
         k64_print("vfs64: invalid or too-long path\n");
         return 0;
     }
 
+    vfs64_backend_t backend = vfs64_pick_backend_for_path(normalized, out_backend_path);
+
+    if (backend != VFS64_BACKEND_FAT32) {
+        if (g_usb_mounted) {
+            k64_print("vfs64: this location is read-only; files can be written under /usb\n");
+        } else {
+            k64_print("vfs64: this location is read-only\n");
+        }
+
+        return 0;
+    }
+
+    /*
+     * FAT32 as the root filesystem means an internal or emulated disk,
+     * which SAFE_HW never writes to.
+     */
+    if (safe_mode64_enabled() && *out_backend_path == normalized) {
+        k64_print("vfs64: write blocked by SAFE_HW mount policy\n");
+        return 0;
+    }
+
+    return 1;
+}
+
+int vfs64_write_file(
+    const char* path,
+    const void* data,
+    nq_u64 size
+) {
+    char normalized[VFS64_MAX_PATH];
+    const char* backend_path = 0;
+
+    if (size > 0 && !data) {
+        return 0;
+    }
+
+    if (!vfs64_resolve_writable(path, normalized, sizeof(normalized), &backend_path)) {
+        return 0;
+    }
+
     return fat32_64_write_file_path(
-        normalized,
+        backend_path,
         (const nq_u8*)data,
         size
     );
 }
 
 int vfs64_mkdir(const char* path) {
-    if (safe_mode64_enabled()) {
-        k64_print("vfs64: write blocked by SAFE_HW mount policy\n");
-        return 0;
-    }
-
-    if (g_vfs_backend != VFS64_BACKEND_FAT32) {
-        k64_print("vfs64: root filesystem is read-only\n");
-        return 0;
-    }
-
     char normalized[VFS64_MAX_PATH];
+    const char* backend_path = 0;
 
-    if (!g_vfs_mounted) {
-        k64_print("vfs64: root filesystem not mounted\n");
+    if (!vfs64_resolve_writable(path, normalized, sizeof(normalized), &backend_path)) {
         return 0;
     }
 
-    if (!vfs64_normalize_path(path, normalized, sizeof(normalized))) {
-        k64_print("vfs64: invalid or too-long path\n");
-        return 0;
-    }
-
-    return fat32_64_mkdir_path(normalized);
+    return fat32_64_mkdir_path(backend_path);
 }
 
 int vfs64_rm(const char* path) {
-    if (safe_mode64_enabled()) {
-        k64_print("vfs64: write blocked by SAFE_HW mount policy\n");
-        return 0;
-    }
-
-    if (g_vfs_backend != VFS64_BACKEND_FAT32) {
-        k64_print("vfs64: root filesystem is read-only\n");
-        return 0;
-    }
-
     char normalized[VFS64_MAX_PATH];
+    const char* backend_path = 0;
 
-    if (!g_vfs_mounted) {
-        k64_print("vfs64: root filesystem not mounted\n");
+    if (!vfs64_resolve_writable(path, normalized, sizeof(normalized), &backend_path)) {
         return 0;
     }
 
-    if (!vfs64_normalize_path(path, normalized, sizeof(normalized))) {
-        k64_print("vfs64: invalid or too-long path\n");
-        return 0;
-    }
-
-    return fat32_64_rm_path(normalized);
+    return fat32_64_rm_path(backend_path);
 }
 
 int vfs64_rmdir(const char* path) {
-    if (safe_mode64_enabled()) {
-        k64_print("vfs64: write blocked by SAFE_HW mount policy\n");
-        return 0;
-    }
-
-    if (g_vfs_backend != VFS64_BACKEND_FAT32) {
-        k64_print("vfs64: root filesystem is read-only\n");
-        return 0;
-    }
-
     char normalized[VFS64_MAX_PATH];
+    const char* backend_path = 0;
 
-    if (!g_vfs_mounted) {
-        k64_print("vfs64: root filesystem not mounted\n");
+    if (!vfs64_resolve_writable(path, normalized, sizeof(normalized), &backend_path)) {
         return 0;
     }
 
-    if (!vfs64_normalize_path(path, normalized, sizeof(normalized))) {
-        k64_print("vfs64: invalid or too-long path\n");
-        return 0;
-    }
-
-    return fat32_64_rmdir_path(normalized);
+    return fat32_64_rmdir_path(backend_path);
 }
 
 int vfs64_stat(const char* path, vfs64_stat_t* out) {
@@ -631,6 +683,11 @@ int vfs64_stat(const char* path, vfs64_stat_t* out) {
      * file, so stat works for files of any size.
      */
     backend = vfs64_pick_backend_for_path(normalized, &backend_path);
+
+    if (backend == VFS64_BACKEND_FAT32 && path_is_root(backend_path)) {
+        out->type = VFS64_TYPE_DIR;
+        return 1;
+    }
 
     if (backend == VFS64_BACKEND_INITRD) {
         if (!initrd64_file_size(backend_path, &size)) {
@@ -666,7 +723,13 @@ int vfs64_enum_dir(const char* path, vfs64_enum_cb_t cb, void* ctx) {
     backend = vfs64_pick_backend_for_path(normalized, &backend_path);
 
     if (backend == VFS64_BACKEND_INITRD) {
-        return initrd64_enum_path(backend_path, cb, ctx);
+        int listed = initrd64_enum_path(backend_path, cb, ctx);
+
+        if (listed && g_usb_mounted && path_is_root(normalized)) {
+            cb("usb", 0, 1, ctx);
+        }
+
+        return listed;
     }
 
     if (backend == VFS64_BACKEND_FAT32) {

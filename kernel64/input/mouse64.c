@@ -452,6 +452,19 @@ void mouse64_handle_byte(nq_u8 data) {
     queue_push(&ev);
 }
 
+void mouse64_push_event(const mouse64_event_t* ev) {
+    if (!ev) {
+        return;
+    }
+
+    nq_u64 flags = irq_save_disable();
+
+    g_mouse_available = 1;
+    queue_push(ev);
+
+    irq_restore(flags);
+}
+
 int mouse64_poll(mouse64_event_t* out) {
     if (!out) {
         return 0;

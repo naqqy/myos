@@ -47,6 +47,12 @@ int mouse64_is_absolute(void);
 void mouse64_handle_byte(nq_u8 data);
 
 /*
+ * Adds a pointer update from another driver (USB). Safe to call from a
+ * task; also makes the pointer visible if there was no PS/2 mouse.
+ */
+void mouse64_push_event(const mouse64_event_t* ev);
+
+/*
  * Takes the next packet from the queue. Returns 0 if there is none.
  */
 int mouse64_poll(mouse64_event_t* out);

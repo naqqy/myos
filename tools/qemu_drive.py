@@ -42,7 +42,10 @@ os.makedirs(out, exist_ok=True)
 work = "/tmp/naq_qemu"
 os.makedirs(work, exist_ok=True)
 shutil.copy("/usr/share/OVMF/OVMF_VARS_4M.fd", work + "/vars.fd")
-shutil.copy(proj + "/build/uefi.img", work + "/uefi.img")
+# QEMU_KEEP_DISK=1 reuses the disk from the previous run, to test things the
+# guest saved on it (the loader's display choice, for example).
+if not (os.environ.get("QEMU_KEEP_DISK") == "1" and os.path.exists(work + "/uefi.img")):
+    shutil.copy(proj + "/build/uefi.img", work + "/uefi.img")
 
 PORT = 45454
 QMP_PORT = 45455
@@ -65,6 +68,61 @@ cmd = [
     "-monitor", "tcp:127.0.0.1:%d,server,nowait" % PORT,
     "-qmp", "tcp:127.0.0.1:%d,server,nowait" % QMP_PORT,
 ]
+
+# QEMU_EXTRA: extra QEMU arguments, e.g. a display size to offer the guest:
+#   QEMU_EXTRA="-global qxl-vga.xres=2560 -global qxl-vga.yres=1080"
+cmd += os.environ.get("QEMU_EXTRA", "").split()
+
+# QEMU_USB="kbd,mouse" (or tablet, hub) adds an xHCI controller with those
+# devices. Devices listed after "hub" are plugged into the hub.
+#
+# "disk" is a 64 MiB USB stick: an MBR partition table with one FAT32
+# partition holding HELLO.TXT. It is left at /tmp/naq_qemu/stick.img, so
+# what the guest wrote can be checked afterwards with
+#   mdir -i /tmp/naq_qemu/stick.img@@1M ::
+def make_stick(path):
+    with open(path, "wb") as f:
+        f.truncate(64 * 1024 * 1024)
+    subprocess.run(["mkfs.fat", "-F", "32", "--offset", "2048", path],
+                   check=True, stdout=subprocess.DEVNULL)
+    with open(work + "/hello.txt", "w") as f:
+        f.write("hello from the stick\n")
+    subprocess.run(["mcopy", "-i", path + "@@1M", work + "/hello.txt",
+                    "::HELLO.TXT"], check=True)
+    cube = proj + "/build/userapps/CUBE.ELF"
+    if os.path.exists(cube):
+        subprocess.run(["mcopy", "-i", path + "@@1M", cube, "::CUBE.ELF"],
+                       check=True)
+    sectors = 64 * 1024 * 1024 // 512
+    entry = bytes([0, 0, 0, 0, 0x0C, 0, 0, 0]) + \
+        (2048).to_bytes(4, "little") + (sectors - 2048).to_bytes(4, "little")
+    with open(path, "r+b") as f:
+        f.seek(446)
+        f.write(entry)
+        f.seek(510)
+        f.write(b"\x55\xAA")
+
+
+usb_devices = [d for d in os.environ.get("QEMU_USB", "").split(",") if d]
+if usb_devices:
+    cmd += ["-device", "qemu-xhci,id=xhci"]
+    hub_port = 0
+    for d in usb_devices:
+        if d == "disk":
+            stick = work + "/stick.img"
+            if not (os.environ.get("QEMU_KEEP_DISK") == "1"
+                    and os.path.exists(stick)):
+                make_stick(stick)
+            cmd += ["-drive", "if=none,id=stick,format=raw,file=" + stick]
+            d = "storage,drive=stick,id=stickdev"
+        if d == "hub":
+            cmd += ["-device", "usb-hub,bus=xhci.0,port=1"]
+            hub_port = 1
+        elif hub_port:
+            cmd += ["-device", "usb-%s,bus=xhci.0,port=1.%d" % (d, hub_port)]
+            hub_port += 1
+        else:
+            cmd += ["-device", "usb-%s,bus=xhci.0" % d]
 p = subprocess.Popen(cmd)
 time.sleep(1.5)
 s = socket.create_connection(("127.0.0.1", PORT))
@@ -94,7 +152,9 @@ def send(line):
 
 
 KEYS = {" ": "spc", "/": "slash", ".": "dot", "-": "minus", "_": "shift-minus",
-        "\n": "ret"}
+        "\n": "ret", ">": "shift-dot", "<": "shift-comma", ",": "comma",
+        "=": "equal", "+": "shift-equal", "!": "shift-1", "(": "shift-9",
+        ")": "shift-0", '"': "shift-apostrophe", "'": "apostrophe"}
 
 
 def send_char(c):

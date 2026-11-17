@@ -27,6 +27,7 @@
 #include "../exec/elf64.h"
 
 #include "../safety/safe_mode64.h"
+#include "../usb/usb64.h"
 
 #include "../gui/gui64.h"
 
@@ -360,6 +361,8 @@ static void shell64_print_help(const char* page_arg) {
         k64_print("  ticks         - show timer ticks\n");
         k64_print("  uptime        - show uptime in seconds\n");
         k64_print("  mem           - show memory map + PMM summary\n");
+        k64_print("  usb           - show USB controllers, devices and log\n");
+        k64_print("  gfxtest       - measure how fast the screen can be redrawn\n");
         k64_print("  pmm           - show physical memory manager summary\n");
         k64_print("  paging        - show paging summary\n");
         k64_print("  heap          - show heap summary\n");
@@ -1098,6 +1101,9 @@ static void shell64_execute_command(void) {
     else if (str_eq(arg, "uptime")) {
         shell64_print_uptime();
     }
+    else if (str_eq(arg, "usb") || str_eq(arg, "lsusb")) {
+        usb64_print_status();
+    }
     else if (str_eq(arg, "mem")) {
         memmap64_print_summary();
         pmm64_print_summary();
@@ -1131,6 +1137,20 @@ static void shell64_execute_command(void) {
     }
     else if (str_starts_with(arg, "norm ")) {
         shell64_norm_path(arg + 5);
+    }
+    else if (str_eq(arg, "gfxtest")) {
+        fb64_benchmark();
+
+        /*
+         * The test drew over the screen: put it back.
+         */
+        if (gui64_active()) {
+            gui64_request_repaint();
+        } else {
+            k64_clear_screen();
+        }
+
+        fb64_benchmark_report();
     }
     else if (str_eq(arg, "fb")) {
         fb64_print_summary();

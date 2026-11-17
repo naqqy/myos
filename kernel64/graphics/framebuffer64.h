@@ -68,4 +68,11 @@ void fb64_blit_rgb32(
 
 void fb64_print_summary(void);
 
+/*
+ * Times full-screen updates ("gfxtest" command). It draws over the whole
+ * screen, so the caller redraws it and then prints the result.
+ */
+void fb64_benchmark(void);
+void fb64_benchmark_report(void);
+
 #endif

@@ -794,6 +794,73 @@ int paging64_identity_map_range(nq_u64 base, nq_u64 length, nq_u64 flags) {
     return 1;
 }
 
+/*
+ * Write-combining for the framebuffer.
+ *
+ * By default a write to video memory goes out to the graphics card one
+ * access at a time, which makes redrawing the screen many times slower
+ * than copying ordinary memory. "Write-combining" lets the CPU collect
+ * writes into 64-byte bursts instead. It is selected per page through the
+ * Page Attribute Table (PAT): an 8-entry table of cache modes that page
+ * table bits index. Entry 1 (the PWT bit alone) is normally
+ * "write-through", which nothing here uses, so it is repurposed as
+ * write-combining and the framebuffer pages are mapped with PWT set.
+ *
+ * QEMU's video memory is ordinary host RAM, so this only shows on real
+ * hardware.
+ */
+#define MSR_PAT        0x277u
+#define PAT_TYPE_WC    0x01ull
+#define PAGE64_PWT     0x008ull
+
+static int g_fb_write_combined = 0;
+
+static int pat_enable_write_combining(void) {
+    nq_u32 eax = 1;
+    nq_u32 ebx = 0;
+    nq_u32 ecx = 0;
+    nq_u32 edx = 0;
+
+    __asm__ volatile (
+        "cpuid"
+        : "+a"(eax), "+b"(ebx), "+c"(ecx), "+d"(edx)
+    );
+
+    /*
+     * CPUID.1:EDX bit 16 = PAT supported (true on every 64-bit CPU, but
+     * cheap to check).
+     */
+    if (!(edx & (1u << 16))) {
+        return 0;
+    }
+
+    nq_u32 lo = 0;
+    nq_u32 hi = 0;
+
+    __asm__ volatile (
+        "rdmsr"
+        : "=a"(lo), "=d"(hi)
+        : "c"(MSR_PAT)
+    );
+
+    nq_u64 pat = ((nq_u64)hi << 32) | lo;
+
+    pat &= ~(0xFFull << 8);
+    pat |= PAT_TYPE_WC << 8;
+
+    __asm__ volatile (
+        "wrmsr"
+        :
+        : "c"(MSR_PAT), "a"((nq_u32)pat), "d"((nq_u32)(pat >> 32))
+    );
+
+    return 1;
+}
+
+int paging64_framebuffer_write_combined(void) {
+    return g_fb_write_combined;
+}
+
 static int map_boot_critical_regions(const naq_boot_info_t* boot) {
     /*
      * Map all managed physical memory identity.
@@ -849,10 +916,12 @@ static int map_boot_critical_regions(const naq_boot_info_t* boot) {
     /*
      * Map GOP framebuffer.
      */
+    g_fb_write_combined = pat_enable_write_combining();
+
     if (!paging64_identity_map_range(
             boot->framebuffer_base,
             boot->framebuffer_size,
-            PAGE64_WRITABLE)) {
+            PAGE64_WRITABLE | (g_fb_write_combined ? PAGE64_PWT : 0))) {
         return 0;
     }
 

@@ -90,6 +90,7 @@ typedef struct fat32_found_entry {
 static int g_fat_mounted = 0;
 
 static nq_u64 g_base_lba = 0;
+static nq_u32 g_fat_device = 0;
 static nq_u32 g_total_sectors = 0;
 static nq_u32 g_fat_start_lba = 0;
 static nq_u32 g_data_start_lba = 0;
@@ -98,6 +99,13 @@ static nq_u32 g_root_cluster = 0;
 static nq_u8  g_sectors_per_cluster = 0;
 static nq_u8  g_num_fats = 0;
 static nq_u32 g_total_clusters = 0;
+
+/*
+ * Sector of the FSInfo block (cached free-space count), 0 if there is
+ * none, and whether it has been marked stale since mounting.
+ */
+static nq_u32 g_fsinfo_sector = 0;
+static int g_fsinfo_stale = 0;
 
 static nq_u8 g_sector_buf[BLOCK64_SECTOR_SIZE];
 static nq_u8 g_fat_sector_buf[BLOCK64_SECTOR_SIZE];
@@ -194,7 +202,7 @@ static nq_u32 cluster_to_lba(nq_u32 cluster) {
 }
 
 static int read_sector_fs(nq_u32 fs_lba, void* out) {
-    return block64_read(g_base_lba + fs_lba, out, 1);
+    return block64_read_device(g_fat_device, g_base_lba + fs_lba, out, 1);
 }
 
 static nq_u32 read_le32(const nq_u8* p) {
@@ -694,7 +702,7 @@ typedef struct fat32_entry_location {
 } fat32_entry_location_t;
 
 static int write_sector_fs(nq_u32 fs_lba, const void* in) {
-    return block64_write(g_base_lba + fs_lba, in, 1);
+    return block64_write_device(g_fat_device, g_base_lba + fs_lba, in, 1);
 }
 
 static void write_le16(nq_u8* p, nq_u16 v) {
@@ -714,9 +722,40 @@ static void fat32_set_first_cluster(fat32_dir_entry_t* e, nq_u32 cluster) {
     e->first_cluster_high = (nq_u16)((cluster >> 16) & 0xFFFFu);
 }
 
+/*
+ * The FSInfo block caches how many clusters are free. This driver does
+ * not keep that number up to date, so before the first allocation or
+ * free it writes "unknown" there, which the FAT32 specification allows
+ * and which makes other systems count for themselves instead of trusting
+ * a wrong figure.
+ */
+static void fat32_mark_fsinfo_stale(void) {
+    if (g_fsinfo_stale || !g_fsinfo_sector) {
+        return;
+    }
+
+    g_fsinfo_stale = 1;
+
+    if (!read_sector_fs(g_fsinfo_sector, g_fat_sector_buf)) {
+        return;
+    }
+
+    if (read_le32(g_fat_sector_buf + 0) != 0x41615252u ||
+        read_le32(g_fat_sector_buf + 484) != 0x61417272u) {
+        return;
+    }
+
+    write_le32(g_fat_sector_buf + 488, 0xFFFFFFFFu);
+    write_le32(g_fat_sector_buf + 492, 0xFFFFFFFFu);
+
+    write_sector_fs(g_fsinfo_sector, g_fat_sector_buf);
+}
+
 static int fat32_write_fat_entry(nq_u32 cluster, nq_u32 value) {
     cluster &= FAT32_CLUSTER_MASK;
     value &= FAT32_CLUSTER_MASK;
+
+    fat32_mark_fsinfo_stale();
 
     if (cluster < 2 || cluster >= g_total_clusters + 2u) {
         return 0;
@@ -1331,11 +1370,15 @@ static int fat32_init_directory_cluster(nq_u32 cluster, nq_u32 parent_cluster) {
         0
     );
 
+    /*
+     * By the FAT32 rules, ".." in a folder that sits directly in the root
+     * directory holds cluster 0, not the root's real cluster number.
+     */
     fat32_build_dir_entry(
         &entries[1],
         dotdot_name,
         FAT32_ATTR_DIRECTORY,
-        parent_cluster,
+        parent_cluster == g_root_cluster ? 0 : parent_cluster,
         0
     );
 
@@ -1366,17 +1409,28 @@ static void fat32_free_cluster_chain_checked(nq_u32 first_cluster) {
 }
 
 int fat32_64_init(nq_u64 base_lba) {
+    const block64_device_t* boot = block64_boot_device();
+
+    return fat32_64_init_device(boot ? boot->id : 0, base_lba);
+}
+
+void fat32_64_unmount(void) {
+    g_fat_mounted = 0;
+}
+
+int fat32_64_init_device(nq_u32 device_id, nq_u64 base_lba) {
     fat32_bpb_t* bpb;
 
     g_fat_mounted = 0;
     g_base_lba = base_lba;
+    g_fat_device = device_id;
 
     if (!block64_available()) {
         k64_print("fat32: no block device\n");
         return 0;
     }
 
-    if (!block64_read(g_base_lba, g_sector_buf, 1)) {
+    if (!block64_read_device(g_fat_device, g_base_lba, g_sector_buf, 1)) {
         k64_print("fat32: boot sector read failed\n");
         return 0;
     }
@@ -1410,6 +1464,13 @@ int fat32_64_init(nq_u64 base_lba) {
         bpb->total_sectors_32;
     g_sectors_per_cluster = bpb->sectors_per_cluster;
     g_num_fats = bpb->num_fats;
+
+    g_fsinfo_sector =
+        (bpb->fs_info != 0 && bpb->fs_info != 0xFFFFu &&
+         bpb->fs_info < bpb->reserved_sectors)
+            ? bpb->fs_info
+            : 0;
+    g_fsinfo_stale = 0;
 
     if (g_sectors_per_fat == 0 || g_root_cluster < 2) {
         k64_print("fat32: invalid FAT32 BPB\n");
@@ -1684,16 +1745,15 @@ int fat32_64_write_file_path(
     }
 
     /*
-    * TEMP POC SAFETY:
-    * Do not free old overwrite chains yet.
-    * This leaks clusters during repeated append/overwrite, but avoids possible
-    * FAT chain corruption while write support is still new.
-    */
-    /*
-    if (old_first_cluster) {
-        fat32_free_cluster_chain(old_first_cluster);
+     * The directory entry now points at the new data, so the clusters of
+     * the version it replaced can be released. Doing it in this order
+     * means a failure part-way leaves the old or the new file intact,
+     * never a mix. (This used to be skipped, which leaked the whole old
+     * file on every overwrite or append.)
+     */
+    if (old_first_cluster && old_first_cluster != new_first_cluster) {
+        fat32_free_cluster_chain_checked(old_first_cluster);
     }
-    */
 
     return 1;
 }

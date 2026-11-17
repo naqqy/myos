@@ -4,6 +4,14 @@
 #include "naq_boot_info.h"
 
 int fat32_64_init(nq_u64 base_lba);
+
+/*
+ * Mounts the FAT32 filesystem that starts at base_lba of the given block
+ * device (fat32_64_init() uses the boot device). There is one FAT32
+ * mount at a time.
+ */
+int fat32_64_init_device(nq_u32 device_id, nq_u64 base_lba);
+void fat32_64_unmount(void);
 int fat32_64_mounted(void);
 
 void fat32_64_print_summary(void);

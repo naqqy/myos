@@ -54,4 +54,9 @@ int paging64_map_direct_range(nq_u64 phys_start, nq_u64 size);
 
 void paging64_print_layout(void);
 
+/*
+ * 1 if the framebuffer is mapped write-combined (fast screen updates).
+ */
+int paging64_framebuffer_write_combined(void);
+
 #endif

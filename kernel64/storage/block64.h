@@ -43,6 +43,13 @@ const char* block64_device_type_name(block64_device_type_t type);
 
 void block64_print_devices(void);
 
+/*
+ * A USB disk came or went (called by the USB mass-storage driver).
+ * block64_usb_attach() returns the block device ID, or -1.
+ */
+int block64_usb_attach(nq_u64 sector_count);
+void block64_usb_detach(void);
+
 int block64_unlock_writes(nq_u32 device_id);
 int block64_lock_writes(nq_u32 device_id);
 

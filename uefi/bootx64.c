@@ -167,94 +167,6 @@ static int gop_pixel_format_supported(EFI_GRAPHICS_PIXEL_FORMAT fmt) {
            fmt == PixelBlueGreenRedReserved8BitPerColor;
 }
 
-static EFI_STATUS select_gop_mode(EFI_GRAPHICS_OUTPUT_PROTOCOL* gop) {
-    EFI_STATUS status;
-    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION* info = NULL;
-    UINTN info_size = 0;
-    UINT32 best_mode = 0;
-    int found_exact = 0;
-
-    if (!gop || !gop->Mode) {
-        return EFI_INVALID_PARAMETER;
-    }
-
-    Print(L"GOP modes available: %u\r\n", gop->Mode->MaxMode);
-
-    for (UINT32 mode = 0; mode < gop->Mode->MaxMode; mode++) {
-        info = NULL;
-        info_size = 0;
-
-        status = uefi_call_wrapper(
-            gop->QueryMode,
-            4,
-            gop,
-            mode,
-            &info_size,
-            &info
-        );
-
-        if (EFI_ERROR(status) || !info) {
-            Print(L"  mode %u: QueryMode failed: %r\r\n", mode, status);
-            continue;
-        }
-
-        Print(
-            L"  mode %u: %ux%u ppsl=%u fmt=%s\r\n",
-            mode,
-            info->HorizontalResolution,
-            info->VerticalResolution,
-            info->PixelsPerScanLine,
-            pixel_format_name(info->PixelFormat)
-        );
-
-        if (gop_pixel_format_supported(info->PixelFormat) &&
-            info->HorizontalResolution == NAQ_TARGET_GOP_WIDTH &&
-            info->VerticalResolution == NAQ_TARGET_GOP_HEIGHT) {
-            best_mode = mode;
-            found_exact = 1;
-        }
-    }
-
-#if NAQ_FORCE_GOP_MODE
-    if (found_exact) {
-        Print(
-            L"Selecting GOP mode %u for target %ux%u...\r\n",
-            best_mode,
-            NAQ_TARGET_GOP_WIDTH,
-            NAQ_TARGET_GOP_HEIGHT
-        );
-
-        status = uefi_call_wrapper(
-            gop->SetMode,
-            2,
-            gop,
-            best_mode
-        );
-
-        if (EFI_ERROR(status)) {
-            /*
-             * Not fatal: the firmware keeps its current mode when SetMode
-             * fails, so boot with that instead of refusing to boot at all.
-             */
-            Print(L"SetMode failed: %r; keeping firmware default.\r\n", status);
-        }
-
-        return EFI_SUCCESS;
-    }
-
-    Print(
-        L"Target GOP mode %ux%u not found; keeping firmware default.\r\n",
-        NAQ_TARGET_GOP_WIDTH,
-        NAQ_TARGET_GOP_HEIGHT
-    );
-#else
-    Print(L"NAQ_FORCE_GOP_MODE disabled; keeping firmware default.\r\n");
-#endif
-
-    return EFI_SUCCESS;
-}
-
-
 /* ============================================================
  * File loading from the boot volume
  * ============================================================ */
@@ -675,6 +587,466 @@ static EFI_STATUS allocate_kernel_stack(naq_boot_info_t* boot) {
 }
 
 /* ============================================================
+ * Display selection
+ * ============================================================
+ *
+ * The kernel has no graphics-card driver: it draws on whatever screen and
+ * resolution the firmware hands over, and cannot change either once it is
+ * running. So the choice is made here, before the kernel starts.
+ *
+ * The firmware may offer one "graphics output" per monitor, each with its
+ * own list of modes. Pressing D at boot opens a small menu to pick an
+ * output and a mode; the choice is saved in \NAQDISP.CFG on the boot
+ * volume and applied on every later boot.
+ *
+ * With nothing saved: use the output that offers the preferred mode
+ * (NAQ_TARGET_GOP_WIDTH x HEIGHT) if there is one, otherwise leave the
+ * firmware's own choice alone.
+ */
+
+#define NAQ_DISPLAY_CFG_PATH  L"\\NAQDISP.CFG"
+#define NAQ_DISPLAY_CFG_MAGIC 0x5053444Eu
+#define NAQ_MAX_OUTPUTS       8u
+#define NAQ_DISPLAY_PROMPT_MS 3000u
+
+typedef struct naq_display_cfg {
+    UINT32 magic;
+    UINT32 output;
+    UINT32 width;
+    UINT32 height;
+} naq_display_cfg_t;
+
+static EFI_GRAPHICS_OUTPUT_PROTOCOL* g_outputs[NAQ_MAX_OUTPUTS];
+static UINTN g_output_count = 0;
+
+static void collect_outputs(void) {
+    EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+    EFI_HANDLE* handles = NULL;
+    UINTN count = 0;
+
+    g_output_count = 0;
+
+    EFI_STATUS status = uefi_call_wrapper(
+        BS->LocateHandleBuffer,
+        5,
+        ByProtocol,
+        &gop_guid,
+        NULL,
+        &count,
+        &handles
+    );
+
+    if (!EFI_ERROR(status) && handles) {
+        for (UINTN i = 0; i < count && g_output_count < NAQ_MAX_OUTPUTS; i++) {
+            EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = NULL;
+
+            status = uefi_call_wrapper(
+                BS->HandleProtocol,
+                3,
+                handles[i],
+                &gop_guid,
+                (VOID**)&gop
+            );
+
+            if (EFI_ERROR(status) || !gop || !gop->Mode || !gop->Mode->Info) {
+                continue;
+            }
+
+            /*
+             * Some firmwares list the same output under two handles.
+             */
+            int duplicate = 0;
+
+            for (UINTN n = 0; n < g_output_count; n++) {
+                if (g_outputs[n] == gop) {
+                    duplicate = 1;
+                }
+            }
+
+            if (!duplicate) {
+                g_outputs[g_output_count++] = gop;
+            }
+        }
+
+        uefi_call_wrapper(BS->FreePool, 1, handles);
+    }
+
+    if (g_output_count == 0) {
+        EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = NULL;
+
+        if (!EFI_ERROR(locate_gop(&gop)) && gop && gop->Mode && gop->Mode->Info) {
+            g_outputs[g_output_count++] = gop;
+        }
+    }
+}
+
+/*
+ * Reads one mode's size. Returns 0 for modes the kernel cannot draw on.
+ */
+static int mode_size(EFI_GRAPHICS_OUTPUT_PROTOCOL* gop, UINT32 mode, UINT32* w, UINT32* h) {
+    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION* info = NULL;
+    UINTN info_size = 0;
+
+    EFI_STATUS status = uefi_call_wrapper(
+        gop->QueryMode,
+        4,
+        gop,
+        mode,
+        &info_size,
+        &info
+    );
+
+    if (EFI_ERROR(status) || !info) {
+        return 0;
+    }
+
+    if (!gop_pixel_format_supported(info->PixelFormat)) {
+        return 0;
+    }
+
+    *w = info->HorizontalResolution;
+    *h = info->VerticalResolution;
+
+    return 1;
+}
+
+static int find_mode(EFI_GRAPHICS_OUTPUT_PROTOCOL* gop, UINT32 width, UINT32 height, UINT32* out_mode) {
+    for (UINT32 mode = 0; mode < gop->Mode->MaxMode; mode++) {
+        UINT32 w = 0;
+        UINT32 h = 0;
+
+        if (mode_size(gop, mode, &w, &h) && w == width && h == height) {
+            *out_mode = mode;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int display_cfg_load(EFI_HANDLE image_handle, naq_display_cfg_t* cfg) {
+    VOID* buffer = NULL;
+    UINTN size = 0;
+
+    EFI_STATUS status = load_file_from_boot_volume(
+        image_handle,
+        NAQ_DISPLAY_CFG_PATH,
+        &buffer,
+        &size
+    );
+
+    if (EFI_ERROR(status) || !buffer) {
+        return 0;
+    }
+
+    int ok = 0;
+
+    if (size >= sizeof(*cfg)) {
+        const naq_display_cfg_t* stored = (const naq_display_cfg_t*)buffer;
+
+        if (stored->magic == NAQ_DISPLAY_CFG_MAGIC) {
+            cfg->magic = stored->magic;
+            cfg->output = stored->output;
+            cfg->width = stored->width;
+            cfg->height = stored->height;
+            ok = 1;
+        }
+    }
+
+    uefi_call_wrapper(BS->FreePool, 1, buffer);
+
+    return ok;
+}
+
+static EFI_STATUS display_cfg_save(EFI_HANDLE image_handle, naq_display_cfg_t* cfg) {
+    EFI_GUID loaded_image_guid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_GUID simple_fs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+
+    EFI_LOADED_IMAGE_PROTOCOL* loaded_image = NULL;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* fs = NULL;
+    EFI_FILE_PROTOCOL* root = NULL;
+    EFI_FILE_PROTOCOL* file = NULL;
+
+    EFI_STATUS status = uefi_call_wrapper(
+        BS->HandleProtocol,
+        3,
+        image_handle,
+        &loaded_image_guid,
+        (VOID**)&loaded_image
+    );
+
+    if (EFI_ERROR(status)) {
+        return status;
+    }
+
+    status = uefi_call_wrapper(
+        BS->HandleProtocol,
+        3,
+        loaded_image->DeviceHandle,
+        &simple_fs_guid,
+        (VOID**)&fs
+    );
+
+    if (EFI_ERROR(status)) {
+        return status;
+    }
+
+    status = uefi_call_wrapper(fs->OpenVolume, 2, fs, &root);
+
+    if (EFI_ERROR(status)) {
+        return status;
+    }
+
+    status = uefi_call_wrapper(
+        root->Open,
+        5,
+        root,
+        &file,
+        NAQ_DISPLAY_CFG_PATH,
+        EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE,
+        0
+    );
+
+    if (EFI_ERROR(status)) {
+        uefi_call_wrapper(root->Close, 1, root);
+        return status;
+    }
+
+    UINTN size = sizeof(*cfg);
+
+    status = uefi_call_wrapper(file->Write, 3, file, &size, cfg);
+
+    uefi_call_wrapper(file->Close, 1, file);
+    uefi_call_wrapper(root->Close, 1, root);
+
+    return status;
+}
+
+/*
+ * Waits up to `ms` for a key. Returns 1 and the key, or 0 on timeout.
+ */
+static int read_key_timeout(UINTN ms, EFI_INPUT_KEY* key) {
+    for (UINTN waited = 0; waited <= ms; waited += 10u) {
+        EFI_STATUS status = uefi_call_wrapper(
+            ST->ConIn->ReadKeyStroke,
+            2,
+            ST->ConIn,
+            key
+        );
+
+        if (!EFI_ERROR(status)) {
+            return 1;
+        }
+
+        uefi_call_wrapper(BS->Stall, 1, 10000u);
+    }
+
+    return 0;
+}
+
+/*
+ * Reads a decimal number typed on the keyboard, ended with Enter.
+ * Returns -1 if nothing was typed or Esc was pressed.
+ */
+static INTN read_number(void) {
+    INTN value = -1;
+
+    for (;;) {
+        EFI_INPUT_KEY key;
+        UINTN index = 0;
+
+        uefi_call_wrapper(BS->WaitForEvent, 3, 1, &ST->ConIn->WaitForKey, &index);
+
+        if (EFI_ERROR(uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key))) {
+            continue;
+        }
+
+        if (key.ScanCode == 0x17) {
+            Print(L"\r\n");
+            return -1;
+        }
+
+        if (key.UnicodeChar == L'\r' || key.UnicodeChar == L'\n') {
+            Print(L"\r\n");
+            return value;
+        }
+
+        if (key.UnicodeChar >= L'0' && key.UnicodeChar <= L'9' && value < 100000) {
+            value = (value < 0 ? 0 : value * 10) + (INTN)(key.UnicodeChar - L'0');
+            Print(L"%c", key.UnicodeChar);
+        }
+    }
+}
+
+/*
+ * The display settings menu. Returns 1 if cfg was filled in.
+ */
+static int display_menu(naq_display_cfg_t* cfg) {
+    UINTN output = 0;
+
+    Print(L"\r\nDisplay settings\r\n");
+    Print(L"----------------\r\n");
+
+    for (UINTN i = 0; i < g_output_count; i++) {
+        Print(
+            L"  output %u: currently %ux%u, %u modes\r\n",
+            (UINT32)i,
+            g_outputs[i]->Mode->Info->HorizontalResolution,
+            g_outputs[i]->Mode->Info->VerticalResolution,
+            g_outputs[i]->Mode->MaxMode
+        );
+    }
+
+    if (g_output_count > 1) {
+        Print(L"\r\nOutput number, then Enter (Esc to cancel): ");
+
+        INTN picked = read_number();
+
+        if (picked < 0 || (UINTN)picked >= g_output_count) {
+            Print(L"Cancelled.\r\n");
+            return 0;
+        }
+
+        output = (UINTN)picked;
+    } else {
+        Print(L"\r\nThe firmware offers a single output, so the monitor cannot be\r\n");
+        Print(L"changed here; pick it in the firmware setup or swap the cables.\r\n");
+    }
+
+    EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = g_outputs[output];
+    UINT32 column = 0;
+
+    Print(L"\r\nModes of output %u:\r\n", (UINT32)output);
+
+    for (UINT32 mode = 0; mode < gop->Mode->MaxMode; mode++) {
+        UINT32 w = 0;
+        UINT32 h = 0;
+
+        if (!mode_size(gop, mode, &w, &h)) {
+            continue;
+        }
+
+        Print(L"  %2u: %4ux%-4u", mode, w, h);
+
+        if (++column == 4u) {
+            column = 0;
+            Print(L"\r\n");
+        }
+    }
+
+    if (column) {
+        Print(L"\r\n");
+    }
+
+    Print(L"\r\nMode number, then Enter (Esc to cancel): ");
+
+    INTN picked = read_number();
+    UINT32 w = 0;
+    UINT32 h = 0;
+
+    if (picked < 0 || (UINT32)picked >= gop->Mode->MaxMode ||
+        !mode_size(gop, (UINT32)picked, &w, &h)) {
+        Print(L"Cancelled.\r\n");
+        return 0;
+    }
+
+    cfg->magic = NAQ_DISPLAY_CFG_MAGIC;
+    cfg->output = (UINT32)output;
+    cfg->width = w;
+    cfg->height = h;
+
+    return 1;
+}
+
+static EFI_STATUS choose_display(EFI_HANDLE image_handle, EFI_GRAPHICS_OUTPUT_PROTOCOL** out_gop) {
+    naq_display_cfg_t cfg;
+    EFI_INPUT_KEY key;
+
+    *out_gop = NULL;
+
+    collect_outputs();
+
+    if (g_output_count == 0) {
+        return EFI_NOT_FOUND;
+    }
+
+    int have_cfg = display_cfg_load(image_handle, &cfg);
+
+    Print(L"Graphics outputs: %u\r\n", (UINT32)g_output_count);
+
+    if (have_cfg) {
+        Print(
+            L"Saved display: output %u at %ux%u\r\n",
+            cfg.output,
+            cfg.width,
+            cfg.height
+        );
+    }
+
+    Print(L"Press D within 3 seconds for display settings...\r\n");
+
+    uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
+
+    if (read_key_timeout(NAQ_DISPLAY_PROMPT_MS, &key) &&
+        (key.UnicodeChar == L'd' || key.UnicodeChar == L'D')) {
+        naq_display_cfg_t picked;
+
+        if (display_menu(&picked)) {
+            cfg = picked;
+            have_cfg = 1;
+
+            EFI_STATUS saved = display_cfg_save(image_handle, &cfg);
+
+            if (EFI_ERROR(saved)) {
+                Print(L"Could not save the choice (%r); it applies to this boot only.\r\n", saved);
+            } else {
+                Print(L"Saved.\r\n");
+            }
+        }
+    }
+
+    EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = NULL;
+    UINT32 mode = 0;
+    int set_mode = 0;
+
+    if (have_cfg && cfg.output < g_output_count &&
+        find_mode(g_outputs[cfg.output], cfg.width, cfg.height, &mode)) {
+        gop = g_outputs[cfg.output];
+        set_mode = 1;
+    } else {
+        if (have_cfg) {
+            Print(L"The saved display is not available; using the default.\r\n");
+        }
+
+        for (UINTN i = 0; i < g_output_count && !gop; i++) {
+            if (find_mode(g_outputs[i], NAQ_TARGET_GOP_WIDTH, NAQ_TARGET_GOP_HEIGHT, &mode)) {
+                gop = g_outputs[i];
+                set_mode = 1;
+            }
+        }
+
+        if (!gop) {
+            gop = g_outputs[0];
+        }
+    }
+
+    if (set_mode) {
+        EFI_STATUS status = uefi_call_wrapper(gop->SetMode, 2, gop, mode);
+
+        if (EFI_ERROR(status)) {
+            /*
+             * Not fatal: the firmware keeps its current mode.
+             */
+            Print(L"SetMode failed: %r; keeping the firmware's mode.\r\n", status);
+        }
+    }
+
+    *out_gop = gop;
+
+    return EFI_SUCCESS;
+}
+
+/* ============================================================
  * ExitBootServices with memory map handoff
  * ============================================================ */
 
@@ -786,22 +1158,11 @@ efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     Print(L"NAQ OS UEFI Loader\r\n");
     Print(L"------------------\r\n\r\n");
 
-    status = locate_gop(&gop);
+    status = choose_display(ImageHandle, &gop);
 
     if (EFI_ERROR(status) || !gop || !gop->Mode || !gop->Mode->Info) {
         Print(L"GOP: not found\r\n");
         Print(L"Status: %r\r\n\r\n", status);
-        Print(L"Press any key to return to firmware...\r\n");
-        wait_for_key();
-        return EFI_SUCCESS;
-    }
-
-    Print(L"GOP: found\r\n");
-
-    status = select_gop_mode(gop);
-
-    if (EFI_ERROR(status) || !gop->Mode || !gop->Mode->Info) {
-        Print(L"GOP mode selection failed: %r\r\n", status);
         Print(L"Press any key to return to firmware...\r\n");
         wait_for_key();
         return EFI_SUCCESS;

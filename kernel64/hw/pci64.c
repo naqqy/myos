@@ -61,6 +61,30 @@ nq_u8 pci64_config_read8(nq_u8 bus, nq_u8 device, nq_u8 function, nq_u8 offset) 
     return (nq_u8)((value >> ((offset & 3u) * 8u)) & 0xFFu);
 }
 
+void pci64_config_write32(nq_u8 bus, nq_u8 device, nq_u8 function, nq_u8 offset, nq_u32 value) {
+    nq_u32 address;
+
+    address =
+        0x80000000u |
+        ((nq_u32)bus << 16) |
+        ((nq_u32)device << 11) |
+        ((nq_u32)function << 8) |
+        ((nq_u32)offset & 0xFCu);
+
+    outl64(PCI_CONFIG_ADDR, address);
+    outl64(PCI_CONFIG_DATA, value);
+}
+
+void pci64_config_write16(nq_u8 bus, nq_u8 device, nq_u8 function, nq_u8 offset, nq_u16 value) {
+    nq_u32 shift = (offset & 2u) * 8u;
+    nq_u32 current = pci64_config_read32(bus, device, function, offset);
+
+    current &= ~(0xFFFFu << shift);
+    current |= (nq_u32)value << shift;
+
+    pci64_config_write32(bus, device, function, offset, current);
+}
+
 static int pci64_read_device(nq_u8 bus, nq_u8 device, nq_u8 function, pci64_device_t* out) {
     nq_u16 vendor = pci64_config_read16(bus, device, function, 0x00);
 
@@ -127,8 +151,6 @@ static void pci64_scan_function(nq_u8 bus, nq_u8 device, nq_u8 function) {
     if (dev.class_code == 0x0Cu && dev.subclass == 0x03u) {
         g_pci64_usb_count++;
 
-        k64_print("PCI USB controller: ");
-        pci64_print_device(&dev);
 
         if (dev.prog_if == 0x30u) {
             g_pci64_xhci_count++;
@@ -138,7 +160,6 @@ static void pci64_scan_function(nq_u8 bus, nq_u8 device, nq_u8 function) {
                 g_have_first_xhci = 1;
             }
 
-            k64_print("PCI: xHCI controller detected.\n");
         }
     }
 }
@@ -180,8 +201,6 @@ void pci64_init(void) {
     }
 
     g_pci64_ready = 1;
-
-    pci64_print_summary();
 }
 
 void pci64_print_summary(void) {
@@ -198,6 +217,16 @@ int pci64_find_class(
     nq_u8 class_code,
     nq_u8 subclass,
     nq_u8 prog_if,
+    pci64_device_t* out
+) {
+    return pci64_find_class_nth(class_code, subclass, prog_if, 0, out);
+}
+
+int pci64_find_class_nth(
+    nq_u8 class_code,
+    nq_u8 subclass,
+    nq_u8 prog_if,
+    nq_u32 index,
     pci64_device_t* out
 ) {
     pci64_device_t dev;
@@ -222,6 +251,11 @@ int pci64_find_class(
                 if (dev.class_code == class_code &&
                     dev.subclass == subclass &&
                     dev.prog_if == prog_if) {
+                    if (index) {
+                        index--;
+                        continue;
+                    }
+
                     if (out) {
                         *out = dev;
                     }

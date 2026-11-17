@@ -27,10 +27,25 @@ nq_u32 pci64_config_read32(nq_u8 bus, nq_u8 device, nq_u8 function, nq_u8 offset
 nq_u16 pci64_config_read16(nq_u8 bus, nq_u8 device, nq_u8 function, nq_u8 offset);
 nq_u8  pci64_config_read8(nq_u8 bus, nq_u8 device, nq_u8 function, nq_u8 offset);
 
+void pci64_config_write32(nq_u8 bus, nq_u8 device, nq_u8 function, nq_u8 offset, nq_u32 value);
+void pci64_config_write16(nq_u8 bus, nq_u8 device, nq_u8 function, nq_u8 offset, nq_u16 value);
+
 int pci64_find_class(
     nq_u8 class_code,
     nq_u8 subclass,
     nq_u8 prog_if,
+    pci64_device_t* out
+);
+
+/*
+ * Like pci64_find_class(), but returns the index-th match (0 = first), for
+ * machines with several controllers of the same kind.
+ */
+int pci64_find_class_nth(
+    nq_u8 class_code,
+    nq_u8 subclass,
+    nq_u8 prog_if,
+    nq_u32 index,
     pci64_device_t* out
 );
 

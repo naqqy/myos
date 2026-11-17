@@ -455,7 +455,7 @@ Alt+Tab style switcher, keyboard navigation in the start menu
 right-click context menus; drag desktop icons; wallpaper image from a file
 file manager: copy/delete/rename (needs write syscalls), scroll wheel, drag the scrollbar thumb
 toggle fullscreen at runtime without recreating the window
-USB mouse (needs xHCI); scroll wheel
+scroll wheel (PS/2 and USB)
 blocking event wait for apps instead of polling every frame
 real per-app icons instead of initials
 
@@ -711,25 +711,46 @@ drain the 8042 output buffer at boot (key released after the loader prompt could
 keyboard IRQ only reads when a byte is waiting
 timer safety net recovers a missed keyboard IRQ
 
-93 Add USB HID keyboard support. // TODO
-xHCI discovery later if needed
-start with firmware/legacy keyboard fallback detection
-eventually support wired USB keyboards reliably
-support keyboard input on more real laptops/desktops
+93 Add USB HID keyboard support. // DONE (tested in QEMU only; not yet on real hardware)
+xHCI driver (kernel64/usb/xhci64.c): firmware handoff, reset, command/event/transfer rings,
+  device slots, control and interrupt transfers, endpoint recovery after errors; polled, no IRQ
+  every xHCI controller in the machine is started (up to 4)
+USB core (kernel64/usb/usb64.c): port scan, hot-plug and unplug, enumeration, composite devices,
+  USB 2 and USB 3 hubs (up to 5 deep), transaction translators for slow devices behind fast hubs
+HID (kernel64/usb/usbhid64.c): boot-protocol keyboards with software key repeat, Caps Lock + LED,
+  arrows/Home/End/PgUp/PgDn/Delete, keypad, Ctrl+letter; wireless receivers work as ordinary keyboards
+"usb" shell command lists controllers, devices and a message log; found devices are printed at boot
+QEMU_USB=1 ./build.sh uefi-qemu runs with a USB keyboard and pointer; tools/qemu_drive.py takes
+  QEMU_USB=kbd,mouse,tablet,hub
+still to do: test on real machines (Intel and AMD); EHCI/UHCI for pre-2012 PCs; keyboards that only
+  speak the report protocol; media keys; interrupts instead of polling
 
-94 Add PS/2 mouse or USB mouse support. // PARTIAL
+94 Add PS/2 mouse or USB mouse support. // DONE
 PS/2 mouse if available // DONE (3-byte packets, 3 buttons, no wheel)
 absolute pointer in VMs (VMware-style vmmouse backdoor; QEMU, VMware, VirtualBox) // DONE
   the guest cursor follows the host pointer exactly, no mouse grab needed; real hardware falls back to PS/2
 app mouse input: NAQ_WIN_EVENT_MOUSE through SYS_WIN_GET_EVENT // DONE
-USB HID mouse later // TODO
+USB HID mouse // DONE (boot protocol; report-descriptor parsing for absolute pointers and
+  mice without boot support; no scroll wheel yet)
 camera/look support for 3D game // TODO (needs relative/captured mouse mode)
 
 95 Add AHCI/SATA backend under block64. // TODO
 
 96 Add NVMe backend under block64. // TODO
 
-97 Add USB mass storage backend under block64. // TODO
+97 Add USB mass storage backend under block64. // DONE (tested in QEMU only; not yet on real hardware)
+kernel64/usb/usbmsc64.c: bulk-only transport + SCSI (TEST UNIT READY, READ CAPACITY, READ/WRITE 10),
+  stall and reset recovery, 32 KiB read-ahead cache; one disk at a time, 512-byte sectors only
+xHCI: bulk transfers; the driver can now be entered from any task (see the locking rule in xhci64.h),
+  because files are read with task switching disabled
+finds FAT32 at sector 0, in an MBR partition or in a GPT partition; mounted at /usb (shown in / and in Files)
+reads work at once; writes need "diskunlock confirm" first, as for any disk
+only when FAT32 is not already the root filesystem (the FAT32 driver handles one mount)
+FAT32 write fixes found by fsck: ".." of a folder in the root is cluster 0; overwriting/appending frees
+  the old file's clusters (was leaked on purpose); FSInfo free count marked unknown on first change
+tools/qemu_drive.py: QEMU_USB=...,disk attaches a 64 MiB FAT32 stick (/tmp/naq_qemu/stick.img)
+still to do: long file names when creating files (8.3 only), file timestamps (written as 1980),
+  write syscalls for apps, several disks, SYNCHRONIZE CACHE, UAS
 
 98 Add ext4 read-only behind the same VFS/block layer. // TODO
 
@@ -755,6 +776,12 @@ versioned asset format
 software rendering first
 GOP has no real acceleration
 eventually explore PCI/GPU drivers much later
+display for now: framebuffer mapped write-combined (PAT); "gfxtest" measures redraw speed // DONE
+  loader display menu (press D at boot): pick output + mode, saved in \NAQDISP.CFG // DONE
+native mode-setting (choose monitor/resolution from inside the OS), way down the line:
+  test machine has an RTX 4070 Super: no public register docs; needs NVIDIA's signed GSP
+  firmware loaded from disk and its RPC protocol (the route Nouveau takes), tied to one
+  firmware version, not testable in QEMU; needs a disk/filesystem driver first to load the blob
 
 102 Add networking. // LONG TERM TODO
 PCI NIC discovery

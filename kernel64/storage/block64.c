@@ -3,6 +3,7 @@
 #include "../arch/x86_64/io64.h"
 #include "../k64_console.h"
 #include "../safety/safe_mode64.h"
+#include "../usb/usbmsc64.h"
 
 #define ATA_PRIMARY_IO      0x1F0
 #define ATA_PRIMARY_CTRL    0x3F6
@@ -357,6 +358,51 @@ int block64_init(void) {
     return 1;
 }
 
+/*
+ * USB disk hot-plug. The registry only grows, so an unplugged disk keeps
+ * its slot (marked absent) and the next one plugged in reuses it.
+ */
+int block64_usb_attach(nq_u64 sector_count) {
+    block64_device_t* dev = 0;
+
+    for (nq_u32 i = 0; i < g_block_device_count; i++) {
+        if (g_block_devices[i].type == BLOCK64_DEVICE_USB_MSC) {
+            dev = &g_block_devices[i];
+            break;
+        }
+    }
+
+    if (dev) {
+        dev->sector_count = sector_count;
+        dev->present = 1;
+        dev->writes_unlocked = 0;
+    } else {
+        dev = block64_register_device(
+            "usb0",
+            BLOCK64_DEVICE_USB_MSC,
+            sector_count,
+            0
+        );
+
+        if (!dev) {
+            return -1;
+        }
+    }
+
+    g_block_ready = 1;
+
+    return (int)dev->id;
+}
+
+void block64_usb_detach(void) {
+    for (nq_u32 i = 0; i < g_block_device_count; i++) {
+        if (g_block_devices[i].type == BLOCK64_DEVICE_USB_MSC) {
+            g_block_devices[i].present = 0;
+            g_block_devices[i].writes_unlocked = 0;
+        }
+    }
+}
+
 int block64_available(void) {
     return g_block_ready;
 }
@@ -528,8 +574,12 @@ int block64_read_device(
         return 0;
     }
 
+    if (dev->type == BLOCK64_DEVICE_USB_MSC) {
+        return dev->present ? usbmsc64_read(lba, buffer, sector_count) : 0;
+    }
+
     /*
-     * Early version: LBA28 only.
+     * ATA, early version: LBA28 only.
      */
     if (lba > 0x0FFFFFFFull) {
         return 0;
@@ -621,8 +671,12 @@ int block64_write_device(
         return 0;
     }
 
+    if (dev->type == BLOCK64_DEVICE_USB_MSC) {
+        return usbmsc64_write(lba, buffer, sector_count);
+    }
+
     /*
-     * Early version: LBA28 only.
+     * ATA, early version: LBA28 only.
      */
     if (lba > 0x0FFFFFFFull) {
         return 0;

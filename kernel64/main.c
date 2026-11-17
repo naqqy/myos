@@ -30,6 +30,8 @@
 
 #include "gui/gui64.h"
 
+#include "usb/usb64.h"
+
 static void halt_forever(void) {
     for (;;) {
         __asm__ volatile ("hlt");
@@ -165,12 +167,24 @@ void kmain64(naq_boot_info_t* boot) {
         k64_print("VFS64 mount failed.\n");
     }
 
+    /*
+     * USB keyboards and mice. Runs in its own task; machines without a
+     * USB 3 (xHCI) controller simply have nothing to find.
+     */
+    usb64_init();
+
     gui64_init();
 
     /*
      * One clean boot summary.
      */
     boot_diag64_print(boot);
+
+    /*
+     * Give the devices plugged in at boot a moment to come up, and say
+     * what was found, before the prompt appears.
+     */
+    usb64_boot_report();
 
     shell64_init();
 
