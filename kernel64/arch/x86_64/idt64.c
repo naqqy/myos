@@ -4,6 +4,7 @@
 #include "syscall64.h"
 #include "../../debug/bootlog64.h"
 #include "../../proc/process64.h"
+#include "../../sound/sound64.h"
 
 #define IDT64_ENTRIES 256
 
@@ -187,6 +188,8 @@ void exception_handler64(interrupt_frame64_t* frame) {
      * never resumes, so abandoning this exception stack is fine.
      */
     if (frame && (frame->cs & 3u) == 3u && process64_current_pid() != 0) {
+        sound64_play(SOUND64_ERROR);
+
         k64_print("\n[user] pid ");
         k64_print_dec64(process64_current_pid());
         k64_print(" killed: ");

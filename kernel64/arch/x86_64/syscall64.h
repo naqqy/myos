@@ -37,6 +37,18 @@
 #define SYS64_GET_ARG         29
 #define SYS64_SETTING_GET     30
 #define SYS64_SETTING_SET     31
+#define SYS64_NET_RESOLVE     32
+#define SYS64_SOCK_OPEN       33
+#define SYS64_SOCK_STATE      34
+#define SYS64_SOCK_SEND       35
+#define SYS64_SOCK_RECV       36
+#define SYS64_SOCK_CLOSE      37
+#define SYS64_NET_READY       38
+#define SYS64_CLOCK           39
+#define SYS64_SOUND_TONE      40
+#define SYS64_SOUND_PLAY      41
+#define SYS64_SOUND_WRITE     42
+#define SYS64_SOUND_STATUS    43
 
 #define NAQ_WIN_EVENT_NONE   0
 #define NAQ_WIN_EVENT_KEY    1

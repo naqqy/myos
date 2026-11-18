@@ -1,3 +1,4 @@
+#include "../net/net64.h"
 #include "process64.h"
 
 #include "../arch/x86_64/context_switch64.h"
@@ -1368,6 +1369,7 @@ static void process64_reap_task(process64_task_t* task) {
 
     if (task->pid != 0) {
         gui64_destroy_windows_for_pid((int)task->pid);
+        net64_tcp_close_pid((int)task->pid);
     }
 
     task->name[0] = 0;

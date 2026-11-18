@@ -2,6 +2,7 @@
 #include "xhci64.h"
 #include "usbhid64.h"
 #include "usbmsc64.h"
+#include "../bt/bt64.h"
 
 #include "../k64_console.h"
 #include "../arch/x86_64/timer64.h"
@@ -41,10 +42,18 @@
  */
 #define ATTACH_TRIES 3u
 
+/*
+ * Start-up is not called finished before this long has passed, however
+ * quiet the ports look: a USB 3 stick needs time to train its link
+ * before the controller reports it as connected.
+ */
+#define BOOT_SETTLE_MS 800u
+
 #define KIND_KEYBOARD 0x1u
 #define KIND_POINTER  0x2u
 #define KIND_HUB      0x4u
 #define KIND_STORAGE  0x8u
+#define KIND_BLUETOOTH 0x10u
 
 /*
  * Standard requests.
@@ -266,6 +275,8 @@ static void log_kind(nq_u32 kinds) {
         usb64_log("hub");
     } else if (kinds & KIND_STORAGE) {
         usb64_log("storage");
+    } else if (kinds & KIND_BLUETOOTH) {
+        usb64_log("Bluetooth");
     } else if ((kinds & KIND_KEYBOARD) && (kinds & KIND_POINTER)) {
         usb64_log("keyboard + mouse");
     } else if (kinds & KIND_KEYBOARD) {
@@ -302,6 +313,7 @@ static void device_detach(int index) {
 
     usbmsc64_detach(d->hc, d->slot);
     usbhid64_detach(d->hc, d->slot);
+    bt64_detach(d->hc, d->slot);
     xhci64_device_close(d->hc, d->slot);
 
     d->used = 0;
@@ -319,6 +331,12 @@ typedef struct parsed_config {
      */
     int has_storage;
     usbmsc64_interface_t storage;
+
+    /*
+     * Bluetooth controller interface (class E0, subclass 1, protocol 1).
+     */
+    int has_bluetooth;
+    bt64_interface_t bluetooth;
 } parsed_config_t;
 
 /*
@@ -330,6 +348,7 @@ typedef struct parsed_config {
 static void parse_config(const nq_u8* cfg, nq_u32 total, parsed_config_t* out) {
     usbhid64_interface_t* cur = 0;
     int in_storage = 0;
+    int in_bluetooth = 0;
     nq_u32 i = 0;
 
     out->value = cfg[5];
@@ -341,6 +360,15 @@ static void parse_config(const nq_u8* cfg, nq_u32 total, parsed_config_t* out) {
     out->storage.ep_out = 0;
     out->storage.in_packet = 0;
     out->storage.out_packet = 0;
+    out->has_bluetooth = 0;
+    out->bluetooth.number = 0;
+    out->bluetooth.ep_events = 0;
+    out->bluetooth.ep_data_in = 0;
+    out->bluetooth.ep_data_out = 0;
+    out->bluetooth.events_packet = 0;
+    out->bluetooth.data_in_packet = 0;
+    out->bluetooth.data_out_packet = 0;
+    out->bluetooth.events_interval = 0;
 
     while (i + 2u <= total) {
         nq_u32 length = cfg[i];
@@ -356,8 +384,14 @@ static void parse_config(const nq_u8* cfg, nq_u32 total, parsed_config_t* out) {
 
             cur = 0;
             in_storage = 0;
+            in_bluetooth = 0;
 
-            if (alternate == 0 && cls == 8u && cfg[i + 6u] == 6u && cfg[i + 7u] == 0x50u &&
+            if (alternate == 0 && cls == 0xE0u && cfg[i + 6u] == 1u && cfg[i + 7u] == 1u &&
+                !out->has_bluetooth) {
+                out->has_bluetooth = 1;
+                out->bluetooth.number = cfg[i + 2u];
+                in_bluetooth = 1;
+            } else if (alternate == 0 && cls == 8u && cfg[i + 6u] == 6u && cfg[i + 7u] == 0x50u &&
                 !out->has_storage) {
                 out->has_storage = 1;
                 out->storage.number = cfg[i + 2u];
@@ -385,6 +419,22 @@ static void parse_config(const nq_u8* cfg, nq_u32 total, parsed_config_t* out) {
                     cur->report_length = (nq_u16)(entry[1] | ((nq_u16)entry[2] << 8));
                     break;
                 }
+            }
+        } else if (type == DESC_ENDPOINT && length >= 7u && in_bluetooth) {
+            nq_u8 address = cfg[i + 2u];
+            nq_u8 kind = cfg[i + 3u] & 0x3u;
+            nq_u16 packet = (nq_u16)(cfg[i + 4u] | ((nq_u16)cfg[i + 5u] << 8));
+
+            if (kind == 3u && (address & 0x80u) && !out->bluetooth.ep_events) {
+                out->bluetooth.ep_events = address;
+                out->bluetooth.events_packet = packet;
+                out->bluetooth.events_interval = cfg[i + 6u];
+            } else if (kind == 2u && (address & 0x80u) && !out->bluetooth.ep_data_in) {
+                out->bluetooth.ep_data_in = address;
+                out->bluetooth.data_in_packet = packet;
+            } else if (kind == 2u && !(address & 0x80u) && !out->bluetooth.ep_data_out) {
+                out->bluetooth.ep_data_out = address;
+                out->bluetooth.data_out_packet = packet;
             }
         } else if (type == DESC_ENDPOINT && length >= 7u && in_storage) {
             nq_u8 address = cfg[i + 2u];
@@ -583,7 +633,7 @@ static int device_attach(nq_u32 hc_index, int parent, nq_u32 port, nq_u8 speed) 
          * Endpoints first, then SET_CONFIGURATION, so the controller is
          * ready by the time the device starts answering on them.
          */
-        xhci64_endpoint_t endpoints[USB64_MAX_HID + 2u];
+        xhci64_endpoint_t endpoints[USB64_MAX_HID + 2u + 3u];
         nq_u32 endpoint_count = 0;
         int storage_ok = cfg.has_storage && cfg.storage.ep_in && cfg.storage.ep_out;
 
@@ -599,6 +649,29 @@ static int device_attach(nq_u32 hc_index, int parent, nq_u32 port, nq_u8 speed) 
             endpoints[1].interval = 0;
 
             endpoint_count = 2;
+        }
+
+        int bluetooth_ok = cfg.has_bluetooth && cfg.bluetooth.ep_events &&
+                           cfg.bluetooth.ep_data_in && cfg.bluetooth.ep_data_out;
+
+        if (bluetooth_ok) {
+            endpoints[endpoint_count].address = cfg.bluetooth.ep_events;
+            endpoints[endpoint_count].attributes = 3u;
+            endpoints[endpoint_count].max_packet = cfg.bluetooth.events_packet;
+            endpoints[endpoint_count].interval = cfg.bluetooth.events_interval;
+            endpoint_count++;
+
+            endpoints[endpoint_count].address = cfg.bluetooth.ep_data_in;
+            endpoints[endpoint_count].attributes = 2u;
+            endpoints[endpoint_count].max_packet = cfg.bluetooth.data_in_packet;
+            endpoints[endpoint_count].interval = 0;
+            endpoint_count++;
+
+            endpoints[endpoint_count].address = cfg.bluetooth.ep_data_out;
+            endpoints[endpoint_count].attributes = 2u;
+            endpoints[endpoint_count].max_packet = cfg.bluetooth.data_out_packet;
+            endpoints[endpoint_count].interval = 0;
+            endpoint_count++;
         }
 
         for (nq_u32 i = 0; i < cfg.hid_count; i++) {
@@ -638,6 +711,11 @@ static int device_attach(nq_u32 hc_index, int parent, nq_u32 port, nq_u8 speed) 
             usbmsc64_attach(hc, slot, &cfg.storage);
         }
 
+        if (bluetooth_ok) {
+            d->kinds |= KIND_BLUETOOTH;
+            bt64_attach(hc, slot, &cfg.bluetooth, d->vendor, d->product);
+        }
+
         for (nq_u32 i = 0; i < cfg.hid_count; i++) {
             if (!cfg.hid[i].ep_address) {
                 continue;
@@ -662,6 +740,7 @@ static int device_attach(nq_u32 hc_index, int parent, nq_u32 port, nq_u8 speed) 
 
         usbmsc64_detach(hc, slot);
         usbhid64_detach(hc, slot);
+        bt64_detach(hc, slot);
         xhci64_device_close(hc, slot);
         d->used = 0;
 
@@ -688,9 +767,14 @@ static int device_attach(nq_u32 hc_index, int parent, nq_u32 port, nq_u8 speed) 
  * ------------------------------------------------------------
  */
 
-static void root_scan(nq_u32 hc_index) {
+/*
+ * Looks at every port of one controller. Returns how many ports have a
+ * device plugged in that is not set up yet but will be tried again.
+ */
+static nq_u32 root_scan(nq_u32 hc_index) {
     xhci64_t* hc = xhci64_get(hc_index);
     nq_u32 ports = xhci64_port_count(hc);
+    nq_u32 pending = 0;
 
     for (nq_u32 port = 1; port <= ports; port++) {
         int changed = 0;
@@ -733,8 +817,14 @@ static void root_scan(nq_u32 hc_index) {
             *tries = 0;
         } else {
             (*tries)++;
+
+            if (*tries < ATTACH_TRIES) {
+                pending++;
+            }
         }
     }
+
+    return pending;
 }
 
 static void hub_port_attach(int hub_index, nq_u32 port) {
@@ -880,13 +970,20 @@ static void usb_task(void* arg) {
      */
     xhci64_idle_ms(150);
 
+    nq_u64 started = ms_now();
     nq_u64 last_root = 0;
     nq_u64 last_hub = 0;
     int first = 1;
 
     for (;;) {
         nq_u64 now = ms_now();
-        int scan_root = first || (now - last_root) >= ROOT_SCAN_MS;
+        /*
+         * While starting up, look at the ports on every pass: real devices
+         * often need a second try, and USB 3 devices take a moment to show
+         * up at all.
+         */
+        int scan_root = first || !g_boot_done || (now - last_root) >= ROOT_SCAN_MS;
+        nq_u32 pending = 0;
         int scan_hubs = first || !g_boot_done || (now - last_hub) >= HUB_POLL_MS;
 
         for (nq_u32 i = 0; i < controllers; i++) {
@@ -903,7 +1000,7 @@ static void usb_task(void* arg) {
 
         if (scan_root) {
             for (nq_u32 i = 0; i < controllers; i++) {
-                root_scan(i);
+                pending += root_scan(i);
             }
 
             last_root = ms_now();
@@ -927,7 +1024,8 @@ static void usb_task(void* arg) {
          * Boot is "done" after the first pass that found nothing new:
          * everything plugged in at power-on is then set up.
          */
-        if (!g_boot_done && !first && g_attached_this_pass == 0) {
+        if (!g_boot_done && !first && g_attached_this_pass == 0 && pending == 0 &&
+            (now - started) >= BOOT_SETTLE_MS) {
             g_boot_done = 1;
         }
 
@@ -1004,6 +1102,8 @@ void usb64_print_status(void) {
             k64_print(" ports");
         } else if (d->kinds & KIND_STORAGE) {
             k64_print("storage");
+        } else if (d->kinds & KIND_BLUETOOTH) {
+            k64_print("Bluetooth");
         } else if ((d->kinds & KIND_KEYBOARD) && (d->kinds & KIND_POINTER)) {
             k64_print("keyboard + mouse");
         } else if (d->kinds & KIND_KEYBOARD) {

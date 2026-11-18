@@ -168,6 +168,20 @@ int xhci64_interrupt_in_start(
 );
 
 /*
+ * Starts receiving continuously on a bulk IN endpoint (for devices that
+ * send whenever they have something, such as a Bluetooth controller).
+ * The handler gets each transfer, up to 4 KiB, as it arrives. The
+ * endpoint can no longer be used with xhci64_bulk().
+ */
+int xhci64_bulk_in_listen(
+    xhci64_t* hc,
+    nq_u8 slot,
+    nq_u8 endpoint_address,
+    xhci64_in_handler_t handler,
+    void* ctx
+);
+
+/*
  * One bulk transfer. `dma` must be memory from the physical frame
  * allocator (identity mapped), at most 64 KiB, and must not cross a
  * 64 KiB boundary.

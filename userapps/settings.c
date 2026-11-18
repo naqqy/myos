@@ -14,7 +14,7 @@
  */
 
 #define WIN_W 470u
-#define WIN_H 400u
+#define WIN_H 476u
 
 #define WALLPAPER_COUNT 3
 #define ACCENT_COUNT 7
@@ -41,6 +41,13 @@
 #define CLOCK_W 110
 #define CLOCK_H 28
 #define CLOCK_GAP 12
+
+#define SOUND_Y 346
+#define VOLUME_X 92
+#define VOLUME_W 22
+#define VOLUME_H 28
+#define EFFECTS_X 330
+#define EFFECTS_W 120
 
 static u32 g_pixels[WIN_W * WIN_H];
 
@@ -310,6 +317,46 @@ static void clock_tile(int index) {
     }
 }
 
+static int g_volume = 7;
+static int g_sounds = 1;
+static int g_has_sound = 0;
+
+/*
+ * Volume: ten steps side by side, filled up to the current one.
+ */
+static void sound_row(void) {
+    if (!g_has_sound) {
+        text(MARGIN, SOUND_Y + 6, "No sound hardware was found.", COL_TEXT_DIM);
+        return;
+    }
+
+    text(MARGIN, SOUND_Y + 6, "Volume", COL_TEXT);
+
+    for (int i = 0; i <= 9; i++) {
+        i32 x = VOLUME_X + i * VOLUME_W;
+        i32 bar = 4 + i * 2;
+
+        rect(x, SOUND_Y, VOLUME_W - 2, VOLUME_H, 0x00FFFFFFu);
+        frame(x, SOUND_Y, VOLUME_W - 2, VOLUME_H, i == g_volume ? COL_SELECT : COL_EDGE);
+
+        if (i == 0) {
+            text(x + 6, SOUND_Y + 6, "x", g_volume == 0 ? COL_SELECT : COL_TEXT_DIM);
+        } else {
+            rect(x + 5, SOUND_Y + VOLUME_H - 4 - bar, VOLUME_W - 12, bar,
+                 i <= g_volume ? 0x0030A0E0u : COL_RULE);
+        }
+    }
+
+    const char* label = g_sounds ? "Sounds: on" : "Sounds: off";
+    i32 len = (i32)strlen(label);
+
+    gradient(EFFECTS_X, SOUND_Y, EFFECTS_W, VOLUME_H, 0x00FFFFFFu, 0x008CD4F0u);
+    rect(EFFECTS_X + 1, SOUND_Y + 1, EFFECTS_W - 2, VOLUME_H / 2 - 1, 0x00F4FDFFu);
+    frame(EFFECTS_X, SOUND_Y, EFFECTS_W, VOLUME_H, COL_EDGE);
+    text(EFFECTS_X + (EFFECTS_W - len * GFX_FONT_W) / 2, SOUND_Y + (VOLUME_H - GFX_FONT_H) / 2,
+         label, COL_TEXT);
+}
+
 static void heading(i32 y, const char* label) {
     text(MARGIN, y, label, COL_TEXT);
     rect(MARGIN + ((i32)strlen(label) + 1) * GFX_FONT_W, y + 8,
@@ -343,7 +390,10 @@ static void paint(void) {
         clock_tile(i);
     }
 
-    heading(326, "Display");
+    heading(326, "Sound");
+    sound_row();
+
+    heading(402, "Display");
 
     line[0] = 0;
     str_append(line, "Screen is ", sizeof(line));
@@ -351,7 +401,7 @@ static void paint(void) {
     str_append(line, " x ", sizeof(line));
     append_number(line, g_screen.height, sizeof(line));
     str_append(line, ". Press D at startup to change it.", sizeof(line));
-    text(MARGIN, 346, line, COL_TEXT_DIM);
+    text(MARGIN, 422, line, COL_TEXT_DIM);
 
     /*
      * Status bar.
@@ -380,6 +430,8 @@ static void apply(int id, int value) {
     g_wallpaper = setting_get(NAQ_SETTING_WALLPAPER);
     g_accent = setting_get(NAQ_SETTING_ACCENT);
     g_clock12 = setting_get(NAQ_SETTING_CLOCK12);
+    g_volume = setting_get(NAQ_SETTING_VOLUME);
+    g_sounds = setting_get(NAQ_SETTING_SOUNDS);
 }
 
 static int inside(i32 x, i32 y, i32 rx, i32 ry, i32 rw, i32 rh) {
@@ -408,6 +460,24 @@ static int handle_click(i32 x, i32 y) {
         }
     }
 
+    if (g_has_sound) {
+        for (int i = 0; i <= 9; i++) {
+            if (inside(x, y, VOLUME_X + i * VOLUME_W, SOUND_Y, VOLUME_W, VOLUME_H)) {
+                apply(NAQ_SETTING_VOLUME, i);
+
+                /* so the new level can be heard */
+                sound_tone(880, 160, 60, NAQ_WAVE_SOFT);
+                return 1;
+            }
+        }
+
+        if (inside(x, y, EFFECTS_X, SOUND_Y, EFFECTS_W, VOLUME_H)) {
+            apply(NAQ_SETTING_SOUNDS, !g_sounds);
+            sound_play(NAQ_SOUND_NOTIFY);
+            return 1;
+        }
+    }
+
     return 0;
 }
 
@@ -424,6 +494,9 @@ int main(void) {
     g_wallpaper = setting_get(NAQ_SETTING_WALLPAPER);
     g_accent = setting_get(NAQ_SETTING_ACCENT);
     g_clock12 = setting_get(NAQ_SETTING_CLOCK12);
+    g_volume = setting_get(NAQ_SETTING_VOLUME);
+    g_sounds = setting_get(NAQ_SETTING_SOUNDS);
+    g_has_sound = sound_present();
 
     str_copy(g_status, "Click an option to apply it.", sizeof(g_status));
 

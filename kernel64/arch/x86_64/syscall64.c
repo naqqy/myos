@@ -1,3 +1,5 @@
+#include "../../net/net64.h"
+#include "../../sound/sound64.h"
 #include "../../safety/safe_mode64.h"
 #include "../../mm/kmem64.h"
 #include "../../mm/usercopy64.h"
@@ -40,6 +42,13 @@ static int g_syscall64_initialized = 0;
 #define SYSCALL64_MAX_WRITE_SIZE (4ull * 1024ull * 1024ull)
 
 static char g_syscall64_arg_buf[PROCESS64_LAUNCH_ARG_SIZE];
+
+/*
+ * Socket data passes through this on its way to or from the program.
+ */
+#define SYSCALL64_SOCK_CHUNK 4096u
+
+static nq_u8 g_syscall64_sock_buf[SYSCALL64_SOCK_CHUNK];
 
 /*
  * Largest window surface an app may present. The pixels are copied straight
@@ -282,6 +291,11 @@ static int syscall64_should_guard_preemption(nq_u64 num) {
         case SYS64_YIELD:
         case SYS64_SLEEP:
         case SYS64_INPUT_GET_KEY:
+        case SYS64_NET_RESOLVE:
+            /*
+             * A name lookup waits for the network task to deliver the
+             * answer, so that task must be able to run meanwhile.
+             */
             return 0;
 
         default:
@@ -1276,6 +1290,166 @@ void syscall64_handler(syscall64_frame_t* frame) {
             break;
         }
 
+        case SYS64_NET_READY: {
+            frame->rax = net64_ready() ? 1 : 0;
+            break;
+        }
+
+        case SYS64_CLOCK: {
+            /*
+             * Returns the battery-backed clock packed as
+             * year:month:day:hour:minute:second (16+8+8+8+8+8 bits),
+             * or 0 if it cannot be read.
+             */
+            timer64_datetime_t now;
+
+            frame->rax = 0;
+
+            if (timer64_read_clock(&now)) {
+                frame->rax = ((nq_u64)now.year << 40) |
+                             ((nq_u64)(now.month & 255u) << 32) |
+                             ((nq_u64)(now.day & 255u) << 24) |
+                             ((nq_u64)(now.hour & 255u) << 16) |
+                             ((nq_u64)(now.minute & 255u) << 8) |
+                             (nq_u64)(now.second & 255u);
+            }
+
+            break;
+        }
+
+        case SYS64_NET_RESOLVE: {
+            /*
+             * RDI = const char* host name or dotted address
+             * RSI = u32* where the IPv4 address goes (host byte order)
+             * Returns 0, or an error if the name was not found.
+             *
+             * Runs without the syscall guard (see
+             * syscall64_should_guard_preemption), so it uses a buffer of
+             * its own rather than the shared ones.
+             */
+            char name[128];
+            nq_u32 ip = 0;
+
+            if (!syscall64_copy_user_string(
+                    (const char*)frame->rdi,
+                    name,
+                    sizeof(name))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            if (!net64_resolve(name, &ip)) {
+                frame->rax = syscall64_error(SYS64_EIO);
+                break;
+            }
+
+            if (!usercopy64_copy_to_user((void*)frame->rsi, &ip, sizeof(ip))) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            frame->rax = 0;
+            break;
+        }
+
+        case SYS64_SOCK_OPEN: {
+            /*
+             * RDI = IPv4 address (host byte order), RSI = port.
+             * Starts a TCP connection and returns its handle at once;
+             * SYS64_SOCK_STATE says when it is open.
+             */
+            int handle = net64_tcp_open(
+                (nq_u32)frame->rdi,
+                (nq_u16)frame->rsi,
+                (int)process64_current_pid()
+            );
+
+            frame->rax = handle > 0 ? (nq_u64)handle : syscall64_error(SYS64_EIO);
+            break;
+        }
+
+        case SYS64_SOCK_STATE: {
+            /*
+             * RDI = handle. Returns 0 connecting, 1 open, 2 closed by the
+             * other side, or an error.
+             */
+            int state = net64_tcp_state((int)frame->rdi, (int)process64_current_pid());
+
+            frame->rax = state >= 0 ? (nq_u64)state : syscall64_error(SYS64_EIO);
+            break;
+        }
+
+        case SYS64_SOCK_SEND: {
+            /*
+             * RDI = handle, RSI = data, RDX = length.
+             * Returns how many bytes were taken (possibly 0 or fewer than
+             * asked; call again for the rest).
+             */
+            nq_u64 length = frame->rdx;
+
+            if (length > SYSCALL64_SOCK_CHUNK) {
+                length = SYSCALL64_SOCK_CHUNK;
+            }
+
+            if (length > 0 &&
+                !usercopy64_copy_from_user(
+                    g_syscall64_sock_buf,
+                    (const void*)frame->rsi,
+                    length)) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            int taken = net64_tcp_send(
+                (int)frame->rdi,
+                (int)process64_current_pid(),
+                g_syscall64_sock_buf,
+                (nq_u32)length
+            );
+
+            frame->rax = taken >= 0 ? (nq_u64)taken : syscall64_error(SYS64_EIO);
+            break;
+        }
+
+        case SYS64_SOCK_RECV: {
+            /*
+             * RDI = handle, RSI = buffer, RDX = its size.
+             * Returns the byte count, 0 if nothing has arrived yet, -1
+             * when the other side has closed and everything was read, or
+             * -2 on error.
+             */
+            nq_u64 capacity = frame->rdx;
+
+            if (capacity > SYSCALL64_SOCK_CHUNK) {
+                capacity = SYSCALL64_SOCK_CHUNK;
+            }
+
+            int got = net64_tcp_recv(
+                (int)frame->rdi,
+                (int)process64_current_pid(),
+                g_syscall64_sock_buf,
+                (nq_u32)capacity
+            );
+
+            if (got > 0 &&
+                !usercopy64_copy_to_user(
+                    (void*)frame->rsi,
+                    g_syscall64_sock_buf,
+                    (nq_u64)got)) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            frame->rax = (nq_u64)(nq_s64)got;
+            break;
+        }
+
+        case SYS64_SOCK_CLOSE: {
+            net64_tcp_close((int)frame->rdi, (int)process64_current_pid());
+            frame->rax = 0;
+            break;
+        }
+
         case SYS64_SETTING_GET: {
             /*
              * RDI = setting id. Returns its value.
@@ -1294,6 +1468,74 @@ void syscall64_handler(syscall64_frame_t* frame) {
             int result = gui64_setting_set((int)frame->rdi, (int)frame->rsi);
 
             frame->rax = result ? (nq_u64)result : syscall64_error(SYS64_EINVAL);
+            break;
+        }
+
+        case SYS64_SOUND_TONE: {
+            /*
+             * RDI = frequency in Hz, RSI = length in ms,
+             * RDX = volume 0..100 in the low byte, wave shape in the next.
+             * Returns 1 if the note was started.
+             */
+            frame->rax = (nq_u64)sound64_tone(
+                (nq_u32)frame->rdi,
+                (nq_u32)frame->rsi,
+                (nq_u32)(frame->rdx & 0xFFu),
+                (nq_u32)((frame->rdx >> 8) & 0xFFu)
+            );
+            break;
+        }
+
+        case SYS64_SOUND_PLAY: {
+            /*
+             * RDI = which system sound (SOUND64_...).
+             */
+            sound64_play((nq_u32)frame->rdi);
+            frame->rax = 0;
+            break;
+        }
+
+        case SYS64_SOUND_WRITE: {
+            /*
+             * RDI = samples (16-bit left/right pairs at 48 kHz),
+             * RSI = number of pairs. Returns how many were queued,
+             * possibly 0 or fewer than asked; call again for the rest.
+             */
+            static nq_s16 chunk[2048 * 2];
+            nq_u64 frames = frame->rsi;
+            nq_u32 room = sound64_room();
+
+            if (frames > 2048u) {
+                frames = 2048u;
+            }
+
+            if (frames > room) {
+                frames = room;
+            }
+
+            if (frames > 0 &&
+                !usercopy64_copy_from_user(chunk, (const void*)frame->rdi, frames * 4u)) {
+                frame->rax = syscall64_error(SYS64_EFAULT);
+                break;
+            }
+
+            frame->rax = frames ? (nq_u64)sound64_write(chunk, (nq_u32)frames) : 0;
+            break;
+        }
+
+        case SYS64_SOUND_STATUS: {
+            /*
+             * RDI = 0: is there sound hardware, 1: samples waiting to
+             * be played, 2: samples that would fit in the queue now.
+             */
+            if (frame->rdi == 1u) {
+                frame->rax = sound64_queued();
+            } else if (frame->rdi == 2u) {
+                frame->rax = sound64_room();
+            } else {
+                frame->rax = sound64_present() ? 1u : 0u;
+            }
+
             break;
         }
 

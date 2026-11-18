@@ -15,22 +15,25 @@ size_t strlen(const char* s) {
 }
 
 void* memset(void* dst, int value, size_t n) {
-    u8* p = (u8*)dst;
+    void* p = dst;
 
-    for (size_t i = 0; i < n; i++) {
-        p[i] = (u8)value;
-    }
+    /* "rep stosb": store AL into RCX bytes at RDI */
+    __asm__ volatile ("rep stosb"
+                      : "+D"(p), "+c"(n)
+                      : "a"(value)
+                      : "memory");
 
     return dst;
 }
 
 void* memcpy(void* dst, const void* src, size_t n) {
-    u8* d = (u8*)dst;
-    const u8* s = (const u8*)src;
+    void* d = dst;
 
-    for (size_t i = 0; i < n; i++) {
-        d[i] = s[i];
-    }
+    /* "rep movsb": copy RCX bytes from RSI to RDI */
+    __asm__ volatile ("rep movsb"
+                      : "+D"(d), "+S"(src), "+c"(n)
+                      :
+                      : "memory");
 
     return dst;
 }

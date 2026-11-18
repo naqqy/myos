@@ -1638,6 +1638,44 @@ int xhci64_interrupt_in_start(
     return 1;
 }
 
+int xhci64_bulk_in_listen(
+    xhci64_t* hc,
+    nq_u8 slot,
+    nq_u8 endpoint_address,
+    xhci64_in_handler_t handler,
+    void* ctx
+) {
+    xhci_dev_t* dev = slot_dev(hc, slot);
+    nq_u32 dci = (nq_u32)(endpoint_address & 0x0Fu) * 2u + 1u;
+
+    if (!dev || !(endpoint_address & 0x80u) || dci < 2u || dci > 31u ||
+        !dev->ep[dci].active || !dev->ep[dci].is_bulk || dev->ep[dci].handler) {
+        return 0;
+    }
+
+    xhci_ep_t* ep = &dev->ep[dci];
+
+    ep->buffer = (nq_u8*)dma_page();
+
+    if (!ep->buffer) {
+        return 0;
+    }
+
+    /*
+     * From here on the endpoint is treated like an interrupt endpoint:
+     * a receive is always pending, and each one that completes (a short
+     * packet ends it) goes to the handler.
+     */
+    ep->buffer_len = 4096u;
+    ep->is_bulk = 0;
+    ep->handler = handler;
+    ep->handler_ctx = ctx;
+
+    ep_queue_in(hc, dev, dci);
+
+    return 1;
+}
+
 int xhci64_bulk(
     xhci64_t* hc,
     nq_u8 slot,

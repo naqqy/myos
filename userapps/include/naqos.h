@@ -7,8 +7,10 @@ typedef unsigned int       u32;
 typedef int                i32;
 typedef unsigned short     u16;
 typedef unsigned char      u8;
+typedef signed char        i8;
+typedef short              i16;
 
-typedef u64 size_t;
+typedef __SIZE_TYPE__ size_t;   /* same type as <stddef.h> */
 
 #define NAQ_TIMER_HZ 1000ull
 
@@ -47,6 +49,18 @@ typedef u64 size_t;
 #define SYS64_GET_ARG         29
 #define SYS64_SETTING_GET     30
 #define SYS64_SETTING_SET     31
+#define SYS64_NET_RESOLVE     32
+#define SYS64_SOCK_OPEN       33
+#define SYS64_SOCK_STATE      34
+#define SYS64_SOCK_SEND       35
+#define SYS64_SOCK_RECV       36
+#define SYS64_SOCK_CLOSE      37
+#define SYS64_NET_READY       38
+#define SYS64_CLOCK           39
+#define SYS64_SOUND_TONE      40
+#define SYS64_SOUND_PLAY      41
+#define SYS64_SOUND_WRITE     42
+#define SYS64_SOUND_STATUS    43
 
 /*
  * Keys without an ASCII code (arrows and friends) arrive as these values in
@@ -233,6 +247,13 @@ i64 syscall3(u64 num, u64 a0, u64 a1, u64 a2);
 void exit(int code);
 i64 write(int fd, const void* buf, size_t len);
 u64 get_ticks(void);
+
+/*
+ * Date and time from the PC's battery-backed clock, packed as
+ * year:month:day:hour:minute:second in 16+8+8+8+8+8 bits (year in the
+ * top bits). Returns 0 when the clock cannot be read.
+ */
+u64 clock_read(void);
 void yield(void);
 u64 getpid(void);
 i64 sleep_ticks(u64 ticks);
@@ -331,6 +352,38 @@ int get_arg(char* buf, u32 buf_size);
 i64 write_file(const char* path, const void* data, size_t size);
 
 /*
+ * Sound. Everything is mixed together by the system at 48 kHz stereo.
+ *
+ * sound_tone()   plays a note: pitch in Hz, length in ms, volume 0..100.
+ * sound_play()   plays one of the system sounds (skipped when the user
+ *                has turned system sounds off).
+ * sound_write()  queues your own samples: `frames` pairs of 16-bit
+ *                left/right values at 48 kHz. It never waits: it returns
+ *                how many pairs it took (the queue holds about 0.7 s),
+ *                so keep the rest and offer it again a little later.
+ */
+#define NAQ_SOUND_RATE 48000u
+
+#define NAQ_WAVE_SINE     0   /* pure tone */
+#define NAQ_WAVE_SOFT     1   /* bell-like, fades out */
+#define NAQ_WAVE_SQUARE   2   /* old computer beep */
+#define NAQ_WAVE_TRIANGLE 3
+
+#define NAQ_SOUND_STARTUP 0
+#define NAQ_SOUND_CLICK   1
+#define NAQ_SOUND_ERROR   2
+#define NAQ_SOUND_NOTIFY  3
+#define NAQ_SOUND_OPEN    4
+#define NAQ_SOUND_CLOSE   5
+
+int sound_present(void);
+int sound_tone(u32 frequency_hz, u32 length_ms, u32 volume, u32 wave);
+void sound_play(u32 sound);
+u32 sound_write(const i16* samples, u32 frames);
+u32 sound_queued(void);     /* pairs waiting to be played */
+u32 sound_room(void);       /* pairs that would fit right now */
+
+/*
  * Desktop settings. setting_set() applies the change at once and returns
  * NAQ_SETTING_SAVED if it was also written to the boot stick (so it
  * survives a restart), NAQ_SETTING_APPLIED if not, or a negative value
@@ -340,6 +393,8 @@ i64 write_file(const char* path, const void* data, size_t size);
 #define NAQ_SETTING_ACCENT    1   /* 0 blue, 1 teal, 2 green, 3 purple,
                                      4 pink, 5 orange, 6 graphite */
 #define NAQ_SETTING_CLOCK12   2   /* 0 = 24-hour clock, 1 = 12-hour */
+#define NAQ_SETTING_VOLUME    3   /* 0 (silent) .. 9 (full) */
+#define NAQ_SETTING_SOUNDS    4   /* system sounds: 0 off, 1 on */
 
 #define NAQ_SETTING_APPLIED 1
 #define NAQ_SETTING_SAVED   2

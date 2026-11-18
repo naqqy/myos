@@ -1,0 +1,13 @@
+QuickJS JavaScript engine, by Fabrice Bellard and Charlie Gordon.
+Source: https://github.com/bellard/quickjs  (commit e585640ffa2c, version 2026-06-04)
+Licence: MIT, see LICENSE.
+
+Only the engine core is here (no command line tool, no std/os modules,
+no Intl/Temporal). It is built by build.sh into libqjs.a for NAQ OS apps,
+on top of the small C library in userapps/libc.
+
+Changes made to the original source (both in quickjs.c):
+  1. CONFIG_ATOMICS is not defined when CONFIG_NO_ATOMICS is set. Atomics
+     needs threads (pthread), which NAQ OS apps do not have.
+  2. The call to js_atomics_free_waiters() in JS_FreeRuntime() is inside
+     #ifdef CONFIG_ATOMICS, so the engine links with Atomics off.

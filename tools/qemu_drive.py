@@ -63,15 +63,26 @@ cmd = [
     "-drive", "if=pflash,format=raw,file=" + work + "/vars.fd",
     "-drive", "if=ide,format=raw,file=" + work + "/uefi.img",
     "-vga", "qxl", "-global", "VGA.vgamem_mb=64",
-    "-display", "none", "-serial", "none", "-net", "none",
+    "-display", "none", "-serial", "none",
+] + (["-netdev", "user,id=net0", "-device", "igb,netdev=net0"]
+     if os.environ.get("QEMU_NET") == "1" else ["-net", "none"]) + [
     "-no-reboot", "-d", "cpu_reset,guest_errors", "-D", work + "/qemu.log",
     "-monitor", "tcp:127.0.0.1:%d,server,nowait" % PORT,
     "-qmp", "tcp:127.0.0.1:%d,server,nowait" % QMP_PORT,
 ]
 
+# QEMU_NET=1 adds an Intel 82576 network card on QEMU's built-in NAT
+# network (address by DHCP, gateway 10.0.2.2, DNS 10.0.2.3).
+#
 # QEMU_EXTRA: extra QEMU arguments, e.g. a display size to offer the guest:
 #   QEMU_EXTRA="-global qxl-vga.xres=2560 -global qxl-vga.yres=1080"
 cmd += os.environ.get("QEMU_EXTRA", "").split()
+
+# QEMU_SOUND=/tmp/out.wav adds an Intel HD Audio controller with a line-out
+# codec and records everything the guest plays into that WAV file.
+if os.environ.get("QEMU_SOUND"):
+    cmd += ["-audiodev", "wav,id=snd0,path=" + os.environ["QEMU_SOUND"],
+            "-device", "intel-hda", "-device", "hda-output,audiodev=snd0"]
 
 # QEMU_USB="kbd,mouse" (or tablet, hub) adds an xHCI controller with those
 # devices. Devices listed after "hub" are plugged into the hub.
@@ -166,7 +177,9 @@ def send(line):
 KEYS = {" ": "spc", "/": "slash", ".": "dot", "-": "minus", "_": "shift-minus",
         "\n": "ret", ">": "shift-dot", "<": "shift-comma", ",": "comma",
         "=": "equal", "+": "shift-equal", "!": "shift-1", "(": "shift-9",
-        ")": "shift-0", '"': "shift-apostrophe", "'": "apostrophe"}
+        ")": "shift-0", '"': "shift-apostrophe", "'": "apostrophe",
+        ":": "shift-semicolon", "?": "shift-slash", "&": "shift-7",
+        "#": "shift-3", "%": "shift-5", "@": "shift-2"}
 
 
 def send_char(c):

@@ -12,6 +12,7 @@
 #include "../input/mouse64.h"
 #include "../fs/vfs64.h"
 #include "../exec/elf64.h"
+#include "../sound/sound64.h"
 
 /*
  * See gui64.h for the overall model. This file has, in order:
@@ -1340,6 +1341,10 @@ static nq_u32 icon_color(const char* name) {
         return 0x00FFA800u;
     }
 
+    if (app_is(name, "BROWSER") || app_is(name, "Browser")) {
+        return 0x001C8CF0u;
+    }
+
     if (app_is(name, "SETTINGS") || app_is(name, "Settings")) {
         return 0x00708AA4u;
     }
@@ -1751,6 +1756,20 @@ static gui64_rect_t icon_cell_rect(int index) {
 static void draw_icon_glyph(int cx, int cy, const char* label, nq_u32 base) {
     nq_u32 white = 0x00FFFFFFu;
     nq_u32 shade = mix(base, 0x00001030u, 1, 2);
+
+    if (name_is(label, "BROWSER")) {
+        /*
+         * Globe: a disc with an equator, two parallels and a meridian.
+         */
+        disc(cx, cy, 12, white, 255);
+        ellipse(cx, cy, 6, 12, shade, 255);
+        ellipse(cx, cy, 4, 11, white, 255);
+        fill(cx, cy - 12, 1, 24, shade);
+        fill(cx - 12, cy, 24, 1, shade);
+        fill(cx - 10, cy - 6, 20, 1, shade);
+        fill(cx - 10, cy + 6, 20, 1, shade);
+        return;
+    }
 
     if (name_is(label, "SETTINGS")) {
         /*
@@ -4687,6 +4706,16 @@ void gui64_enter(void) {
     app_list_load();
     desktop_render();
 
+    /*
+     * The start-up sound, the first time the desktop appears.
+     */
+    static int chimed = 0;
+
+    if (!chimed) {
+        chimed = 1;
+        sound64_play(SOUND64_STARTUP);
+    }
+
     g_active = 1;
     g_text_mode_request = 0;
     g_menu_open = 0;
@@ -4998,6 +5027,10 @@ int gui64_create_app_window_ex(
 
     GUI64_UNLOCK();
 
+    if (id > 0) {
+        sound64_play(SOUND64_OPEN);
+    }
+
     return id;
 }
 
@@ -5129,6 +5162,10 @@ int gui64_destroy_window(int id, int requester_pid) {
     }
 
     GUI64_UNLOCK();
+
+    if (ok) {
+        sound64_play(SOUND64_CLOSE);
+    }
 
     return ok;
 }
@@ -5489,7 +5526,7 @@ static void settings_append(char* out, nq_u32 size, const char* key, int value) 
  * Writes the settings to the boot stick. Returns 1 if they were saved.
  */
 static int settings_save(void) {
-    char text[96];
+    char text[128];
 
     /*
      * Ask first, so a missing or locked stick is not reported as an error
@@ -5504,6 +5541,8 @@ static int settings_save(void) {
     settings_append(text, sizeof(text), "wallpaper", g_set_wallpaper);
     settings_append(text, sizeof(text), "accent", g_set_accent);
     settings_append(text, sizeof(text), "clock12", g_set_clock12);
+    settings_append(text, sizeof(text), "volume", (int)sound64_volume());
+    settings_append(text, sizeof(text), "sounds", sound64_effects_on());
 
     return vfs64_write_file(GUI64_SETTINGS_PATH, text, str_len64(text));
 }
@@ -5523,7 +5562,7 @@ static int settings_key_is(const char* line, const char* key) {
 }
 
 void gui64_settings_load(void) {
-    char text[128];
+    char text[192];
     vfs64_stat_t st;
     nq_u64 size = 0;
 
@@ -5563,6 +5602,10 @@ void gui64_settings_load(void) {
                     g_set_accent = value;
                 } else if (settings_key_is(line, "clock12") && value <= 1) {
                     g_set_clock12 = value;
+                } else if (settings_key_is(line, "volume")) {
+                    sound64_set_volume((nq_u32)value);
+                } else if (settings_key_is(line, "sounds") && value <= 1) {
+                    sound64_set_effects(value);
                 }
 
                 break;
@@ -5582,6 +5625,8 @@ int gui64_setting_get(int id) {
         case GUI64_SETTING_WALLPAPER: return g_set_wallpaper;
         case GUI64_SETTING_ACCENT:    return g_set_accent;
         case GUI64_SETTING_CLOCK12:   return g_set_clock12;
+        case GUI64_SETTING_VOLUME:    return (int)sound64_volume();
+        case GUI64_SETTING_SOUNDS:    return sound64_effects_on();
         default:                      return -1;
     }
 }
@@ -5601,6 +5646,10 @@ int gui64_setting_set(int id, int value) {
         g_set_accent = value;
     } else if (id == GUI64_SETTING_CLOCK12 && value <= 1) {
         g_set_clock12 = value;
+    } else if (id == GUI64_SETTING_VOLUME && value <= 9) {
+        sound64_set_volume((nq_u32)value);
+    } else if (id == GUI64_SETTING_SOUNDS && value <= 1) {
+        sound64_set_effects(value);
     } else {
         ok = 0;
     }

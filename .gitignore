@@ -4,3 +4,6 @@ build/
 # Python caches from tools/
 __pycache__/
 *.pyc
+
+# Compiled QuickJS objects, kept between builds
+.cache/

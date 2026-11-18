@@ -259,6 +259,25 @@ KERNEL64_USBHID_OBJ="$BUILD_DIR/usbhid64.o"
 KERNEL64_USBMSC_C="$KERNEL64_DIR/usb/usbmsc64.c"
 KERNEL64_USBMSC_OBJ="$BUILD_DIR/usbmsc64.o"
 
+KERNEL64_NIC_C="$KERNEL64_DIR/net/nic64.c"
+KERNEL64_NIC_OBJ="$BUILD_DIR/nic64.o"
+
+KERNEL64_NET_C="$KERNEL64_DIR/net/net64.c"
+KERNEL64_NET_OBJ="$BUILD_DIR/net64.o"
+
+KERNEL64_HDA_C="$KERNEL64_DIR/sound/hda64.c"
+KERNEL64_HDA_OBJ="$BUILD_DIR/hda64.o"
+
+KERNEL64_SOUND_C="$KERNEL64_DIR/sound/sound64.c"
+KERNEL64_SOUND_OBJ="$BUILD_DIR/sound64.o"
+
+KERNEL64_BT_C="$KERNEL64_DIR/bt/bt64.c"
+KERNEL64_BT_OBJ="$BUILD_DIR/bt64.o"
+KERNEL64_BTA2DP_C="$KERNEL64_DIR/bt/bta2dp64.c"
+KERNEL64_BTA2DP_OBJ="$BUILD_DIR/bta2dp64.o"
+KERNEL64_SBC_C="$KERNEL64_DIR/bt/sbc64.c"
+KERNEL64_SBC_OBJ="$BUILD_DIR/sbc64.o"
+
 # ------------------------------------------------------------
 # Assets / initrd / user apps
 # ------------------------------------------------------------
@@ -275,6 +294,9 @@ SPLASH_NIMG_HEIGHT="${SPLASH_NIMG_HEIGHT:-384}"
 
 USERAPPS_DIR="${USERAPPS_DIR:-userapps}"
 USERAPPS_BUILD_DIR="$BUILD_DIR/userapps"
+# Compiled QuickJS objects survive "clean" builds (they take minutes to make).
+QUICKJS_CACHE_DIR="${QUICKJS_CACHE_DIR:-.cache/quickjs}"
+AR="${AR:-ar}"
 USERAPP_LINKER="$USERAPPS_DIR/userapp.ld"
 
 # Optimisation level for user apps and their runtime. -O2 lets GCC use SSE
@@ -815,6 +837,13 @@ build_kernel64() {
   compile64_c "Compiling 64-bit USB core" "$KERNEL64_USB_C" "$KERNEL64_USB_OBJ"
   compile64_c "Compiling 64-bit USB keyboard and mouse" "$KERNEL64_USBHID_C" "$KERNEL64_USBHID_OBJ"
   compile64_c "Compiling 64-bit USB storage" "$KERNEL64_USBMSC_C" "$KERNEL64_USBMSC_OBJ"
+  compile64_c "Compiling 64-bit network card driver" "$KERNEL64_NIC_C" "$KERNEL64_NIC_OBJ"
+  compile64_c "Compiling 64-bit network stack" "$KERNEL64_NET_C" "$KERNEL64_NET_OBJ"
+  compile64_c "Compiling 64-bit HD Audio driver" "$KERNEL64_HDA_C" "$KERNEL64_HDA_OBJ"
+  compile64_c "Compiling 64-bit sound mixer" "$KERNEL64_SOUND_C" "$KERNEL64_SOUND_OBJ"
+  compile64_c "Compiling 64-bit Bluetooth" "$KERNEL64_BT_C" "$KERNEL64_BT_OBJ"
+  compile64_c "Compiling 64-bit Bluetooth audio" "$KERNEL64_BTA2DP_C" "$KERNEL64_BTA2DP_OBJ"
+  compile64_c "Compiling 64-bit SBC encoder" "$KERNEL64_SBC_C" "$KERNEL64_SBC_OBJ"
 
   echo "==> Compiling 64-bit stack protector runtime"
   "$GCC" "${GCC64_FLAGS[@]}" \
@@ -869,6 +898,13 @@ build_kernel64() {
     "$KERNEL64_USB_OBJ" \
     "$KERNEL64_USBHID_OBJ" \
     "$KERNEL64_USBMSC_OBJ" \
+    "$KERNEL64_NIC_OBJ" \
+    "$KERNEL64_NET_OBJ" \
+    "$KERNEL64_HDA_OBJ" \
+    "$KERNEL64_SOUND_OBJ" \
+    "$KERNEL64_BT_OBJ" \
+    "$KERNEL64_BTA2DP_OBJ" \
+    "$KERNEL64_SBC_OBJ" \
     build/stack_chk64.o
 
   msg "Converting 64-bit kernel ELF to flat binary"
@@ -965,6 +1001,8 @@ build_userapps() {
   local user_cflags=(
     -m64
     -I"$USERAPPS_DIR/include"
+    -I"$USERAPPS_DIR/libc/include"
+    -Ithird_party/quickjs
     -ffreestanding
     -fpie
     -fno-stack-protector
@@ -981,6 +1019,10 @@ build_userapps() {
     "$USERAPPS_DIR/runtime/time.c"
     "$USERAPPS_DIR/runtime/gfx.c"
     "$USERAPPS_DIR/runtime/render3d.c"
+    "$USERAPPS_DIR/runtime/net.c"
+    "$USERAPPS_DIR/runtime/crypto.c"
+    "$USERAPPS_DIR/runtime/tls.c"
+    "$USERAPPS_DIR/runtime/image.c"
     # The kernel's bitmap font, shared with apps for gfx_text().
     "$KERNEL64_DIR/console/font8x8.c"
   )
@@ -1003,6 +1045,102 @@ build_userapps() {
 
     "$GCC" "${user_cflags[@]}" -c "$runtime_src" -o "$runtime_obj"
     runtime_objs+=("$runtime_obj")
+  done
+
+  # Optional libraries. They are archives, so the linker only takes the
+  # parts an app actually calls: apps that do not use them stay small.
+  #
+  #   libnaqc.a  small C library (malloc, printf, maths) for ported code
+  #   libqjs.a   the QuickJS JavaScript engine (third_party/quickjs)
+  local libc_dir="$USERAPPS_DIR/libc"
+  local quickjs_dir="third_party/quickjs"
+  local libc_archive="$USERAPPS_BUILD_DIR/libnaqc.a"
+  local quickjs_archive="$USERAPPS_BUILD_DIR/libqjs.a"
+  local libgcc_archive
+  libgcc_archive="$("$GCC" -m64 -print-libgcc-file-name)"
+  local app_libs=()
+  local lib_src
+  local lib_obj
+
+  if [[ -d "$libc_dir" ]]; then
+    local libc_objs=()
+
+    for lib_src in "$libc_dir"/*.c; do
+      lib_obj="$USERAPPS_BUILD_DIR/libc_$(basename "$lib_src" .c).o"
+      "$GCC" "${user_cflags[@]}" -I"$libc_dir/include" -c "$lib_src" -o "$lib_obj"
+      libc_objs+=("$lib_obj")
+    done
+
+    rm -f "$libc_archive"
+    "$AR" rcs "$libc_archive" "${libc_objs[@]}"
+  fi
+
+  if [[ -d "$quickjs_dir" && -d "$libc_dir" ]]; then
+    local quickjs_objs=()
+    local quickjs_stamp="$QUICKJS_CACHE_DIR/stamp"
+    local quickjs_key
+
+    # The engine is 65,000 lines and takes a while to compile, so its
+    # objects are kept outside the build directory and reused until the
+    # source, the C library headers or the compiler flags change.
+    quickjs_key="$(cat "$quickjs_dir"/*.c "$quickjs_dir"/*.h "$libc_dir"/include/*.h "$libc_dir"/include/sys/*.h | sha1sum | cut -d' ' -f1) ${user_cflags[*]}"
+
+    mkdir -p "$QUICKJS_CACHE_DIR"
+
+    if [[ ! -f "$quickjs_stamp" || "$(cat "$quickjs_stamp")" != "$quickjs_key" ]]; then
+      msg "Compiling the QuickJS engine (slow the first time)"
+      rm -f "$quickjs_stamp"
+
+      for lib_src in quickjs libregexp libunicode cutils dtoa; do
+        "$GCC" "${user_cflags[@]}" -I"$libc_dir/include" \
+          -D_GNU_SOURCE -DCONFIG_NO_ATOMICS \
+          -DCONFIG_VERSION="\"$(cat "$quickjs_dir/VERSION")\"" \
+          -w -fno-strict-aliasing \
+          -c "$quickjs_dir/$lib_src.c" -o "$QUICKJS_CACHE_DIR/$lib_src.o" &
+      done
+
+      wait
+
+      for lib_src in quickjs libregexp libunicode cutils dtoa; do
+        [[ -f "$QUICKJS_CACHE_DIR/$lib_src.o" ]] || { echo "QuickJS: $lib_src.c failed to compile" >&2; return 1; }
+      done
+
+      printf '%s' "$quickjs_key" > "$quickjs_stamp"
+    fi
+
+    for lib_src in quickjs libregexp libunicode cutils dtoa; do
+      quickjs_objs+=("$QUICKJS_CACHE_DIR/$lib_src.o")
+    done
+
+    rm -f "$quickjs_archive"
+    "$AR" rcs "$quickjs_archive" "${quickjs_objs[@]}"
+    app_libs+=("$quickjs_archive")
+  fi
+
+  if [[ -f "$libc_archive" ]]; then
+    app_libs+=("$libc_archive" "$libgcc_archive")
+  fi
+
+  # Scripts that are compiled into an app: userapps/<app>/<name>.js becomes
+  # <name>_js.h holding the text as the array g_<name>_js (with a 0 at the end).
+  local gen_dir="$USERAPPS_BUILD_DIR/gen"
+  local js_src
+
+  mkdir -p "$gen_dir"
+  user_cflags+=(-I"$gen_dir" -I"$USERAPPS_DIR")
+
+  for js_src in "$USERAPPS_DIR"/*/*.js; do
+    [[ -f "$js_src" ]] || continue
+
+    local js_name
+    js_name="$(basename "$js_src" .js)"
+
+    {
+      echo "/* Generated by build.sh from $js_src. Do not edit. */"
+      echo "static const unsigned char g_${js_name}_js[] = {"
+      od -An -v -tu1 "$js_src" | sed -e 's/[0-9][0-9]*/&,/g'
+      echo "0 };"
+    } > "$gen_dir/${js_name}_js.h"
   done
 
   local found=0
@@ -1064,7 +1202,8 @@ build_userapps() {
       -o "$out" \
       "$runtime_crt0_obj" \
       "$obj" \
-      "${runtime_objs[@]}"
+      "${runtime_objs[@]}" \
+      --start-group "${app_libs[@]}" --end-group
 
     "$OBJCOPY" --strip-debug "$out" "$out"
   done < <(find "$USERAPPS_DIR" -maxdepth 1 -type f -name '*.c' -print0)
@@ -1513,13 +1652,34 @@ run_qemu_uefi() {
 
   # QEMU_USB=1 adds a USB 3 controller with a USB keyboard and pointer, so
   # input goes through the kernel's USB drivers instead of PS/2.
+  # QEMU_NET=1 adds an Intel network card (the 82576, a relative of the
+  # I225/I226 on real boards) on QEMU's built-in NAT network.
+  local qemu_net_args=(-net none)
+
+  if [[ "${QEMU_NET:-0}" == "1" ]]; then
+    qemu_net_args=(-netdev user,id=net0 -device igb,netdev=net0)
+  fi
+
   local qemu_usb_args=()
 
   if [[ "${QEMU_USB:-0}" == "1" ]]; then
     qemu_usb_args=(-device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet)
   fi
 
+  # QEMU_SOUND=1 adds an Intel HD Audio controller that plays through the
+  # host's sound system (PulseAudio / PipeWire, as WSLg provides). Set it to
+  # another QEMU audio backend name (alsa, sdl, ...) to use that instead.
+  local qemu_sound_args=()
+
+  if [[ -n "${QEMU_SOUND:-}" && "${QEMU_SOUND}" != "0" ]]; then
+    local qemu_sound_backend="$QEMU_SOUND"
+
+    [[ "$qemu_sound_backend" == "1" ]] && qemu_sound_backend="pa"
+    qemu_sound_args=(-audiodev "$qemu_sound_backend,id=snd0" -device intel-hda -device hda-output,audiodev=snd0)
+  fi
+
   "$QEMU64" \
+    "${qemu_sound_args[@]}" \
     -machine pc \
     -m "${QEMU_RAM:-1024M}" \
     "${qemu_accel_args[@]}" \
@@ -1531,7 +1691,7 @@ run_qemu_uefi() {
     -display "${QEMU_DISPLAY:-gtk}",zoom-to-fit=off \
     -monitor none \
     -serial none \
-    -net none \
+    "${qemu_net_args[@]}" \
     "${qemu_usb_args[@]}" \
     "${qemu_debug_args[@]}"
 }

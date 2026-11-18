@@ -31,6 +31,9 @@
 #include "gui/gui64.h"
 
 #include "usb/usb64.h"
+#include "net/net64.h"
+#include "sound/sound64.h"
+#include "bt/bt64.h"
 
 static void halt_forever(void) {
     for (;;) {
@@ -188,6 +191,22 @@ void kmain64(naq_boot_info_t* boot) {
      * Give the devices plugged in at boot a moment to come up, and say
      * what was found, before the prompt appears.
      */
+    /*
+     * Wired network. Also runs in its own task; the address arrives from
+     * DHCP a moment after the link comes up.
+     */
+    net64_init();
+
+    /*
+     * Sound: the HD Audio controller and its mixer task.
+     */
+    sound64_init();
+
+    /*
+     * Bluetooth: waits for the USB task to find a controller.
+     */
+    bt64_init();
+
     usb64_boot_report();
 
     /*

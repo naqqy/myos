@@ -139,6 +139,65 @@ int get_arg(char* buf, u32 buf_size) {
     return (int)syscall2(SYS64_GET_ARG, (u64)buf, (u64)buf_size);
 }
 
+int sound_present(void) {
+    return (int)syscall1(SYS64_SOUND_STATUS, 0);
+}
+
+int sound_tone(u32 frequency_hz, u32 length_ms, u32 volume, u32 wave) {
+    return (int)syscall3(SYS64_SOUND_TONE, frequency_hz, length_ms,
+                         (u64)(volume & 0xFFu) | ((u64)(wave & 0xFFu) << 8));
+}
+
+void sound_play(u32 sound) {
+    syscall1(SYS64_SOUND_PLAY, sound);
+}
+
+u32 sound_write(const i16* samples, u32 frames) {
+    i64 taken = syscall2(SYS64_SOUND_WRITE, (u64)samples, frames);
+
+    return taken > 0 ? (u32)taken : 0u;
+}
+
+u32 sound_queued(void) {
+    return (u32)syscall1(SYS64_SOUND_STATUS, 1);
+}
+
+u32 sound_room(void) {
+    return (u32)syscall1(SYS64_SOUND_STATUS, 2);
+}
+
+u64 clock_read(void) {
+    return (u64)syscall0(SYS64_CLOCK);
+}
+
+int net_ready(void) {
+    return (int)syscall0(SYS64_NET_READY);
+}
+
+int net_resolve(const char* name, u32* out_ip) {
+    return (int)syscall2(SYS64_NET_RESOLVE, (u64)name, (u64)out_ip);
+}
+
+int sock_open(u32 ip, u16 port) {
+    return (int)syscall2(SYS64_SOCK_OPEN, (u64)ip, (u64)port);
+}
+
+int sock_state(int handle) {
+    return (int)syscall1(SYS64_SOCK_STATE, (u64)handle);
+}
+
+int sock_send(int handle, const void* data, u32 length) {
+    return (int)syscall3(SYS64_SOCK_SEND, (u64)handle, (u64)data, (u64)length);
+}
+
+int sock_recv(int handle, void* buffer, u32 capacity) {
+    return (int)syscall3(SYS64_SOCK_RECV, (u64)handle, (u64)buffer, (u64)capacity);
+}
+
+void sock_close(int handle) {
+    syscall1(SYS64_SOCK_CLOSE, (u64)handle);
+}
+
 int setting_get(int id) {
     return (int)syscall1(SYS64_SETTING_GET, (u64)id);
 }

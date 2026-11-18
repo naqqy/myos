@@ -78,6 +78,8 @@ void gui64_init(void);
 #define GUI64_SETTING_WALLPAPER 0
 #define GUI64_SETTING_ACCENT    1
 #define GUI64_SETTING_CLOCK12   2
+#define GUI64_SETTING_VOLUME    3   /* 0..9 */
+#define GUI64_SETTING_SOUNDS    4   /* system sounds: 0 off, 1 on */
 
 #define GUI64_WALLPAPER_DAY    0
 #define GUI64_WALLPAPER_SUNSET 1

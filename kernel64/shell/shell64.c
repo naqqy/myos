@@ -28,6 +28,9 @@
 
 #include "../safety/safe_mode64.h"
 #include "../usb/usb64.h"
+#include "../net/net64.h"
+#include "../sound/sound64.h"
+#include "../bt/bt64.h"
 
 #include "../gui/gui64.h"
 
@@ -367,6 +370,13 @@ static void shell64_print_help(const char* page_arg) {
         k64_print("  uptime        - show uptime in seconds\n");
         k64_print("  mem           - show memory map + PMM summary\n");
         k64_print("  usb           - show USB controllers, devices and log\n");
+        k64_print("  net           - show the network card, link and address\n");
+        k64_print("  ping <host>   - check that a computer answers (name or IP)\n");
+        k64_print("  sound         - show the sound device (sound test, sound vol 0..9)\n");
+        k64_print("  beep [hz] [ms] - play a tone\n");
+        k64_print("  bt            - Bluetooth status (bt pair connects a headset in pairing mode)\n");
+        k64_print("  dns <name>    - look up the address of a name\n");
+        k64_print("  http <host> [path] - fetch a page over plain HTTP\n");
         k64_print("  gfxtest       - measure how fast the screen can be redrawn\n");
         k64_print("  pmm           - show physical memory manager summary\n");
         k64_print("  paging        - show paging summary\n");
@@ -1108,6 +1118,36 @@ static void shell64_execute_command(void) {
     }
     else if (str_eq(arg, "usb") || str_eq(arg, "lsusb")) {
         usb64_print_status();
+    }
+    else if (str_eq(arg, "net")) {
+        net64_print_status();
+    }
+    else if (str_starts_with(arg, "ping ")) {
+        net64_shell_ping(arg + 5);
+    }
+    else if (str_starts_with(arg, "dns ")) {
+        net64_shell_dns(arg + 4);
+    }
+    else if (str_starts_with(arg, "http ")) {
+        net64_shell_http(arg + 5);
+    }
+    else if (str_eq(arg, "bt") || str_eq(arg, "bluetooth")) {
+        bt64_shell("");
+    }
+    else if (str_starts_with(arg, "bt ")) {
+        bt64_shell(arg + 3);
+    }
+    else if (str_eq(arg, "sound")) {
+        sound64_shell("");
+    }
+    else if (str_starts_with(arg, "sound ")) {
+        sound64_shell(arg + 6);
+    }
+    else if (str_eq(arg, "beep")) {
+        sound64_shell_beep("");
+    }
+    else if (str_starts_with(arg, "beep ")) {
+        sound64_shell_beep(arg + 5);
     }
     else if (str_eq(arg, "mem")) {
         memmap64_print_summary();

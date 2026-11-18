@@ -5,7 +5,7 @@
 #include "../proc/process64.h"
 
 #define ELF64_MAX_IMAGE_SIZE  (16ull * 1024ull * 1024ull)
-#define ELF64_USER_STACK_SIZE (1024ull * 1024ull)
+#define ELF64_USER_STACK_SIZE (4ull * 1024ull * 1024ull)
 
 int elf64_exec_file(const char* path);
 

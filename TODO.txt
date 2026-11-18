@@ -822,10 +822,108 @@ native mode-setting (choose monitor/resolution from inside the OS), way down the
   firmware loaded from disk and its RPC protocol (the route Nouveau takes), tied to one
   firmware version, not testable in QEMU; needs a disk/filesystem driver first to load the blob
 
-102 Add networking. // LONG TERM TODO
-PCI NIC discovery
-simple driver later
-UDP/IP stack much later
+102 Add networking. // DONE for wired IPv4 (card driver confirmed on the real I226-V)
+kernel64/net/nic64.c: Intel igb/igc Ethernet driver (I225/I226, I210/I211, I350, 82576), polled;
+  renegotiates for gigabit if the link comes up slower (Windows leaves it at 100 Mb/s)
+kernel64/net/net64.c: Ethernet, ARP, IPv4, ICMP echo, UDP, DHCP client (with renewal), DNS,
+  and client-side TCP (retransmission with back-off, in-order delivery, no window scaling)
+shell: net, ping <host>, dns <name>, http <host> [path]
+sockets for apps: SYS_SOCK_OPEN/STATE/SEND/RECV/CLOSE (non-blocking), SYS_NET_RESOLVE, SYS_NET_READY;
+  waiting helpers in userapps/runtime/net.c; connections are closed when the program exits
+TLS 1.3 client (userapps/runtime/tls.c + crypto.c): X25519, ChaCha20-Poly1305 and AES-128-GCM,
+  SHA-256/HKDF
+  the server certificate is NOT verified: encrypted, but the server's identity is not proven
+  TLSTEST.ELF checks the crypto against published vectors and fetches a page over HTTPS
+BROWSER.ELF: HTTP and HTTPS, redirects, chunked bodies; shows text, headings, lists,
+  preformatted blocks and clickable links; address box, back, scrolling
+  pictures: PNG (not interlaced), baseline JPEG, first frame of GIF (userapps/runtime/image.c,
+    with its own inflate); scaled to fit, loaded after the text, any key stops them
+  CSS subset: display:none / visibility, color, font-weight, font-size (large or not),
+    text-align:center; tag, .class, #id selectors with up to three ancestors; <style>, style=""
+    and up to 4 linked sheets; @media print and max-width blocks skipped
+QEMU_NET=1 for ./build.sh uefi-qemu and tools/qemu_drive.py
+still to do:
+  certificate verification (X.509 parsing, RSA and ECDSA signature checks, a root store, host
+    name and date checks); until then nothing secret should go through TLS
+  HelloRetryRequest, TLS 1.2 for older servers
+  browser: progressive JPEG, interlaced PNG, WebP/AVIF/SVG, animated GIF; CSS layout (floats,
+    flexbox, grid, margins, backgrounds), pseudo-classes and attribute selectors; cookies,
+    POST forms, non-Latin text, downloads to /usb, compressed (gzip) pages
+  not planned: video (needs H.264/VP9/AV1 decoders, a sound driver and audio decoders)
+JavaScript in the browser: // DONE (2026-11-17)
+  engine: QuickJS (third_party/quickjs, MIT, version 2026-06-04, engine core only; two small
+    changes listed in README.naqos) built by build.sh into libqjs.a and cached in .cache/quickjs
+  userapps/libc: a small C library for ported code (malloc with size-class free lists, strings,
+    printf family, qsort, clock; maths on the x87). Built as libnaqc.a; apps only get what they
+    call. Apps hand the heap its memory with naq_heap_init()
+  SYS64_CLOCK (39) gives apps the battery clock; app stack raised from 1 MiB to 4 MiB
+  userapps/jstest.c: engine and C library self-test ("run jstest")
+  userapps/browser/dom.js (compiled into the browser): document tree built from the page's HTML,
+    CSS selectors, events with capture and bubbling, timers, fetch/XMLHttpRequest (GET), console,
+    location/history/navigator/localStorage (memory only), URL, classList/style/dataset
+  userapps/browser/script.c: fresh 64 MB engine per page, time limits (a script that runs too
+    long is stopped), alert/confirm boxes, "JS on/off" and "Log" toolbar buttons (about:console)
+  after scripts change the page it is written back out as HTML and laid out again; every piece
+    of text carries its element's number ("<nq 12>") so clicks reach the right element
+  form controls: text boxes (click to type), check boxes, radio buttons, buttons, selects
+    (click to step through), GET form submission; about:demo is a built-in test page
+  still to do: layout information for scripts (sizes and positions read as 0), canvas, modules,
+    POST and request headers, cookies, MutationObserver (stubbed), styles added by script
+    (<style> elements created after load are ignored), text cursor movement inside a text box
+  TCP: listening sockets, window scaling, out-of-order reassembly; IPv6; a network indicator
+    in the dock; other cards (e1000/e1000e, Realtek); Wi-Fi is not realistic
+
+Sound. // DONE (2026-11-17), not yet heard on real hardware
+kernel64/sound/hda64.c: Intel HD Audio driver, polled. Finds every HDA controller (PCI class
+  04/03), resets it, talks to the codec through the CORB/RIRB rings (or the one-at-a-time
+  registers if those do not answer), reads the codec's widget graph and routes one 48 kHz
+  16-bit stereo stream to every analogue output socket (line out, headphones, speaker).
+  Codecs with only digital outputs (a graphics card's HDMI codec) are skipped.
+kernel64/sound/sound64.c: mixer task ("sound"), whole-number arithmetic only. Notes with an
+  envelope (sine, bell, square, triangle), six system sounds made of notes, and a queue of
+  samples from apps. Keeps the hardware filled 70 ms ahead of the playing point.
+syscalls 40..43: sound_tone, sound_play, sound_write (48 kHz stereo samples), status
+desktop: start-up chime, window open/close, crash sound; browser alert boxes
+Settings app: volume 0..9 and system sounds on/off, saved in NAQOS.CFG
+shell: sound, sound test, sound 0..5, sound vol N, beep [hz] [ms]
+userapps/piano.c: keyboard for trying it out; "Tune" sends computed samples
+testing: QEMU_SOUND=/tmp/out.wav with tools/qemu_drive.py records what the guest plays;
+  tools/tests/wavcheck.py lists the sounds in the recording with pitch, level and dropouts.
+  QEMU_SOUND=1 ./build.sh uefi-qemu plays through the host
+still to do:
+  the "sound" command says why when no device was found; real boards may need per-codec fixes
+  recording (microphone, line in); jack detection (currently all sockets play at once)
+  HDMI/DisplayPort audio (needs the display driver), USB audio, Intel SST/SOF (class 04/01)
+  WAV file player, sample rate conversion in the kernel (apps must supply 48 kHz stereo)
+  MP3/Opus/AAC decoders; these plus a video decoder are what video playback still needs
+
+Bluetooth audio to a headset. // IN PROGRESS (started 2026-11-17)
+goal: hear the mixer's output on a Logitech G435 over Bluetooth (its USB receiver is lost)
+QEMU has no Bluetooth emulation, so every step is checked on the real PC ("bt log" is the trace)
+the user's controller: Intel, USB 8087:0038, chip variant 0x1c, firmware ibt-0291-0291.sfi.
+  Their board has no analogue HD Audio codec (only the graphics card's HDMI one): its audio
+  chip is presumably USB, so Bluetooth (or a USB audio driver) is the only way to hear anything
+done and confirmed on the PC: USB transport, commands and events, chip identification
+written, NOT yet tried on the PC (2026-11-17):
+  kernel64/bt/bt64.c: controller set-up, data packets (xhci64_bulk_in_listen for the IN side),
+    scan with names, connect, accept incoming, pairing (Simple Pairing "just works", PIN 0000
+    fallback), link key saved to /usb/NAQBT.CFG, encryption, one call to the saved headset at boot
+  kernel64/bt/bta2dp64.c: L2CAP signalling and channels, minimal SDP answers, AVDTP as initiator
+    and as acceptor, media channel, RTP + SBC packets paced by the mixer's clock
+  kernel64/bt/sbc64.c: SBC encoder, whole numbers only (stereo, 8 subbands, 16 blocks, loudness,
+    48 kHz). tools/tests/sbctest.py checks it against an independent decoder (33 dB)
+  kernel64/sound/sound64.c: capture queue for a non-card sink; with no sound card the mixer
+    runs off the timer
+  shell: bt, bt pair, bt scan, bt connect [n], bt disconnect, bt forget, bt log
+known limits:
+  firmware is not loaded: it must be left in the chip by Windows (Restart, not Shut down)
+  pairing here replaces the headset's key for this PC's Bluetooth address, so Windows has to
+    pair again afterwards (and the other way round)
+  only 48 kHz plain stereo SBC; a headset proposing other settings is refused and asked again
+  no volume/play buttons (AVCTP channel accepted, ignored), no microphone, one device at a time
+still to do: firmware loader (.sfi from the stick), reconnect when the headset comes back,
+  Settings page for pairing, output choice when a sound card exists too
+kernel size: __kernel64_end is 0x4E0D40 of the 0x500000 limit; raise the limit before adding more
 
 103 Add dynamic linking/shared libraries. // LONG TERM TODO
 static ELF apps are enough for now
