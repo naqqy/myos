@@ -192,6 +192,13 @@ static void fetch(const char* host) {
         return;
     }
 
+    puts(g_conn.verified ? "  identity: VERIFIED\n" : "  identity: NOT verified: ");
+
+    if (!g_conn.verified) {
+        puts(g_conn.verify_error);
+        puts("\n");
+    }
+
     puts("  handshake done in ");
     print_number(time_ticks_to_ms(get_ticks() - start));
     puts(" ms\n");

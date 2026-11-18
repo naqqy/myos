@@ -126,6 +126,16 @@ typedef struct tls_conn {
     u8 record[TLS_RECORD_MAX + 512u];
     u8 handshake[49152];
     u32 handshake_len;
+
+    /*
+     * Whether the server proved who it is: its certificate chain leads
+     * to a trusted authority, names the host, is in date, and the server
+     * holds its key. The connection is encrypted either way; when this
+     * is 0, verify_error says why, and it is the caller's decision
+     * whether to go on.
+     */
+    int verified;
+    char verify_error[96];
 } tls_conn_t;
 
 /*

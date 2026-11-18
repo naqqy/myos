@@ -1022,6 +1022,7 @@ build_userapps() {
     "$USERAPPS_DIR/runtime/net.c"
     "$USERAPPS_DIR/runtime/crypto.c"
     "$USERAPPS_DIR/runtime/tls.c"
+    "$USERAPPS_DIR/runtime/x509.c"
     "$USERAPPS_DIR/runtime/image.c"
     # The kernel's bitmap font, shared with apps for gfx_text().
     "$KERNEL64_DIR/console/font8x8.c"
@@ -1059,6 +1060,14 @@ build_userapps() {
   local libgcc_archive
   libgcc_archive="$("$GCC" -m64 -print-libgcc-file-name)"
   local app_libs=()
+
+  # The runtime is an archive too, so an app that never opens a secure
+  # connection does not carry the certificate code and root list buffer.
+  local runtime_archive="$USERAPPS_BUILD_DIR/libnaqrt.a"
+
+  rm -f "$runtime_archive"
+  "$AR" rcs "$runtime_archive" "${runtime_objs[@]}"
+  app_libs+=("$runtime_archive")
   local lib_src
   local lib_obj
 
@@ -1128,6 +1137,12 @@ build_userapps() {
 
   mkdir -p "$gen_dir"
   user_cflags+=(-I"$gen_dir" -I"$USERAPPS_DIR")
+
+  # The browser's fonts, drawn from DejaVu Sans at build time.
+  if ! python3 tools/gen_browser_font.py "$gen_dir/browser_font.h"; then
+    echo "The browser font could not be made (needs python3-pil and fonts-dejavu-core)." >&2
+    return 1
+  fi
 
   for js_src in "$USERAPPS_DIR"/*/*.js; do
     [[ -f "$js_src" ]] || continue
@@ -1202,7 +1217,6 @@ build_userapps() {
       -o "$out" \
       "$runtime_crt0_obj" \
       "$obj" \
-      "${runtime_objs[@]}" \
       --start-group "${app_libs[@]}" --end-group
 
     "$OBJCOPY" --strip-debug "$out" "$out"
@@ -1310,6 +1324,18 @@ build_initrd() {
   fi
 
   mkdir -p "$INITRD_FS_DIR/apps"
+
+  # The certificate authorities trusted for HTTPS: the build machine's own
+  # list (Mozilla's, from the ca-certificates package), packed for NAQ OS.
+  local ca_bundle="${CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}"
+
+  mkdir -p "$INITRD_FS_DIR/system"
+
+  if [[ -f "$ca_bundle" ]]; then
+    "$PYTHON3" tools/gen_crypto_tables.py roots "$ca_bundle" "$INITRD_FS_DIR/system/roots.bin"
+  else
+    echo "WARNING: no certificate bundle at $ca_bundle; HTTPS sites cannot be verified." >&2
+  fi
 
   build_game_assets
 

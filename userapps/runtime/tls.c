@@ -1,4 +1,5 @@
 #include "../include/naqnet.h"
+#include "../include/naqx509.h"
 #include "../include/crypto.h"
 
 /*
@@ -370,19 +371,19 @@ static u32 build_client_hello(
     n += 8;
 
     /*
-     * signature_algorithms: what the server may sign its certificate
-     * proof with. Required, even though the proof is not checked here.
+     * signature_algorithms: the kinds of signature this client can check
+     * (ECDSA on P-256 / P-384, RSA with SHA-256/384/512).
      */
-    static const u16 sigs[9] = {
-        0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601, 0x0807
+    static const u16 sigs[8] = {
+        0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601
     };
 
     put16(out + n, 13);
-    put16(out + n + 2, 2u + 18u);
-    put16(out + n + 4, 18);
+    put16(out + n + 2, 2u + 16u);
+    put16(out + n + 4, 16);
     n += 6;
 
-    for (int i = 0; i < 9; i++) {
+    for (int i = 0; i < 8; i++) {
         put16(out + n, sigs[i]);
         n += 2;
     }
@@ -554,6 +555,14 @@ int tls_connect(tls_conn_t* c, const char* host, u16 port, u32 timeout_ms) {
     c->handshake_len = 0;
     c->cipher = CIPHER_CHACHA20_POLY1305_SHA256;
     c->key_len = 32;
+    c->verified = 0;
+    c->verify_error[0] = 0;
+
+    /* who the server is: filled in as its certificate messages arrive */
+    static u8 cert_message[32768];
+    static x509_key_t server_public;
+    int chain_ok = 0;
+    int key_proved = 0;
 
     if (strlen(host) > 200u) {
         return fail(c, "that host name is too long");
@@ -755,11 +764,66 @@ int tls_connect(tls_conn_t* c, const char* host, u16 port, u32 timeout_ms) {
                 finished = 1;
             }
 
-            /*
-             * EncryptedExtensions, Certificate and CertificateVerify are
-             * recorded in the transcript but not examined: this client
-             * does not verify who the server is.
-             */
+            if (m[0] == HS_CERTIFICATE && body <= sizeof(cert_message)) {
+                /*
+                 * The certificate chain: a context, then a list of
+                 * certificates, each with a 3-byte length and followed
+                 * by its extensions. Kept in a buffer of its own because
+                 * the server's key is needed again for the next message.
+                 */
+                const u8* certs[8];
+                u32 lengths[8];
+                u32 count = 0;
+
+                copy(cert_message, m + 4, body);
+
+                u32 p = 1u + cert_message[0];
+
+                p += 3u;    /* length of the whole list */
+
+                while (p + 3u <= body && count < 8u) {
+                    u32 len = ((u32)cert_message[p] << 16) | ((u32)cert_message[p + 1u] << 8) | cert_message[p + 2u];
+
+                    p += 3u;
+
+                    if (p + len + 2u > body) {
+                        break;
+                    }
+
+                    certs[count] = cert_message + p;
+                    lengths[count] = len;
+                    count++;
+                    p += len;
+                    p += 2u + (((u32)cert_message[p] << 8) | cert_message[p + 1u]);
+                }
+
+                chain_ok = x509_verify_chain(certs, lengths, count, host, &server_public,
+                                             c->verify_error, sizeof(c->verify_error));
+            }
+
+            if (m[0] == HS_CERTIFICATE_VERIFY && body >= 4u) {
+                /*
+                 * Proof that the server holds the certificate's key: its
+                 * signature over everything said so far in the handshake.
+                 */
+                static u8 signed_text[64 + 34 + 32];
+                static const char label[] = "TLS 1.3, server CertificateVerify";
+                u32 scheme = ((u32)m[4] << 8) | m[5];
+                u32 sig_len = ((u32)m[6] << 8) | m[7];
+
+                for (u32 i = 0; i < 64u; i++) {
+                    signed_text[i] = 0x20;
+                }
+
+                copy(signed_text + 64, (const u8*)label, 33);
+                signed_text[64 + 33] = 0;
+                transcript_hash(&transcript, signed_text + 64 + 34);
+
+                key_proved = sig_len + 4u <= body && server_public.kind != 0 &&
+                             x509_verify_signature(&server_public, scheme, signed_text, sizeof(signed_text),
+                                                   m + 8, sig_len);
+            }
+
             sha256_update(&transcript, m, 4u + body);
 
             at += 4u + body;
@@ -772,6 +836,28 @@ int tls_connect(tls_conn_t* c, const char* host, u16 port, u32 timeout_ms) {
         }
 
         c->handshake_len = rest;
+    }
+
+    c->verified = chain_ok && key_proved;
+
+    if (chain_ok && !key_proved) {
+        const char* why = "the server could not prove it holds the certificate's key";
+        u32 i = 0;
+
+        for (; why[i] && i + 1u < sizeof(c->verify_error); i++) {
+            c->verify_error[i] = why[i];
+        }
+
+        c->verify_error[i] = 0;
+    } else if (!chain_ok && !c->verify_error[0]) {
+        const char* why = "the server sent no certificate";
+        u32 i = 0;
+
+        for (; why[i]; i++) {
+            c->verify_error[i] = why[i];
+        }
+
+        c->verify_error[i] = 0;
     }
 
     /*

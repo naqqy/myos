@@ -843,8 +843,7 @@ BROWSER.ELF: HTTP and HTTPS, redirects, chunked bodies; shows text, headings, li
     and up to 4 linked sheets; @media print and max-width blocks skipped
 QEMU_NET=1 for ./build.sh uefi-qemu and tools/qemu_drive.py
 still to do:
-  certificate verification (X.509 parsing, RSA and ECDSA signature checks, a root store, host
-    name and date checks); until then nothing secret should go through TLS
+  (certificate verification is done: see "FINISHING THE BROWSER")
   HelloRetryRequest, TLS 1.2 for older servers
   browser: progressive JPEG, interlaced PNG, WebP/AVIF/SVG, animated GIF; CSS layout (floats,
     flexbox, grid, margins, backgrounds), pseudo-classes and attribute selectors; cookies,
@@ -872,6 +871,65 @@ JavaScript in the browser: // DONE (2026-11-17)
     (<style> elements created after load are ignored), text cursor movement inside a text box
   TCP: listening sockets, window scaling, out-of-order reassembly; IPv6; a network indicator
     in the dock; other cards (e1000/e1000e, Realtek); Wi-Fi is not realistic
+
+Browser layout engine. // DONE in part (2026-11-17), QEMU only so far
+the old "flowing text" core of userapps/browser.c is gone; pages now go through
+  userapps/browser/engine.c: HTML -> tree of elements and text (C side; the script engine's
+    own tree is still written back as HTML and re-read), block and inline layout with margins
+    (sibling collapsing), padding, borders, backgrounds, width / max-width / centring, lists
+    with bullets and numbers, tables (columns sized by content), inline-block, form controls,
+    pictures scaled to their box; output is a display list that is painted and hit-tested
+  userapps/browser/style.c: selectors (tag, class, id, attribute, descendant, child, a few
+    pseudo-classes), specificity and !important, inheritance, built-in element styles,
+    @media/@supports/@layer, var() for page-level variables, colours incl. rgb()/hsl()
+  tools/gen_browser_font.py: DejaVu Sans (and Mono) at 8 sizes, regular and bold, as 4-bit
+    pictures made at build time (needs python3-pil and fonts-dejavu-core); Windows-1252
+    characters, so accents, curly quotes, dashes and the euro sign now show
+floats (2026-11-17): left and right floats with clear; lines shorten to run round them;
+  tables and flex rows sit beside them; cells, inline blocks, flex items and floats keep
+  their own floats to themselves; a box grows to hold its own floats only if it is one of those
+flex rows (2026-11-17): flex-grow / shrink / basis and the flex shorthand, justify-content,
+  align-items (stretch, centre, end), flex-wrap, gap, auto margins; a flex box holding only
+  text is centred as asked
+positioning (2026-11-17): position absolute and fixed are laid out against the nearest
+  positioned ancestor (or the page) from top/right/bottom/left, after that ancestor's own
+  content so they paint on top; relative nudges a block; things parked off the page, clipped,
+  opacity 0, or squeezed to 1 px with overflow hidden ("screen reader only") are left out;
+  display:table on a box with no rows is a shrink-to-fit block (Wikipedia's figures)
+selectors (2026-11-17): :not(simple), :nth-child / :nth-last-child, :only-child,
+  :first/last-of-type, + and ~ siblings, attribute tests ~= |= ^= $= *=
+
+"FINISHING THE BROWSER": the user's stated goal (2026-11-17), then Linux app loading.
+Target: everyday sites readable and usable, and safe to type a password into. Left, in order:
+  1. layout, done 2026-11-17: grid with grid-template-columns (px, %, fr, repeat, minmax,
+     auto-fill) and grid-column spans; flex columns (gap, sideways alignment); ::before and
+     ::after text (plain strings and \hex escapes the font has; its own colour and weight are
+     not applied); border-radius on backgrounds and frames
+     layout, still open: grid rows / areas / explicit placement, background pictures,
+     per-side border colours, fixed elements that stay on scroll, z-index order,
+     parent/child margin collapsing, media queries on resize, :hover
+  2. certificate verification: DONE 2026-11-17 (QEMU and host tests; not yet on the real PC)
+     userapps/runtime/x509.c: SHA-384/512, big-number arithmetic, RSA PKCS#1 v1.5 and PSS,
+       ECDSA on P-256 and P-384, DER certificate reading, chain building to a trusted root,
+       host name (incl. one-label wildcards) and dates (a day's slack: the PC clock may be
+       local time); tls.c checks the chain and the server's CertificateVerify signature
+     /system/roots.bin: the build machine's CA bundle (Mozilla's list, 120 roots) packed by
+       tools/gen_crypto_tables.py; override with CA_BUNDLE=...
+     browser: refuses unverified sites with a warning page; "Open the page anyway" trusts
+       that host until the browser closes; status bar says verified / not verified
+     tools/tests/x509test.py: host test against OpenSSL-made signatures, 8 real sites and
+       4 broken ones (expired, wrong host, self-signed, unknown root)
+     not done: revocation (OCSP/CRL), name constraints, RSA-PSS-signed certificates,
+       Ed25519, P-521, TLS 1.2 (so TLS 1.2-only servers still fail to connect at all)
+     the runtime is now an archive (libnaqrt.a): apps only carry what they call
+  3. cookies, POST forms, request headers for fetch/XMLHttpRequest
+  4. text beyond Windows-1252 (the font has only those characters), gzip pages, downloads,
+     progressive JPEG / WebP, find in page, text selection
+  5. speed on real hardware; the script side still re-serialises the whole page on change
+known rough spots: Wikipedia's page header (menus, search box) is mostly gone or reduced to
+  small marks, because its controls are positioned/hidden in ways not fully followed yet
+test pages: tools/tests/pages (mklay boxes, mkflo floats and flex, mkpos positioning and
+  selectors, mkgrid grid / columns / generated text / rounding, mkjs scripts)
 
 Sound. // DONE (2026-11-17), not yet heard on real hardware
 kernel64/sound/hda64.c: Intel HD Audio driver, polled. Finds every HDA controller (PCI class
